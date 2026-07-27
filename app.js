@@ -145,10 +145,13 @@ function setupEventListeners() {
         });
     }
 
-    // Sync Phone Button
-    document.getElementById('syncPeerBtn').addEventListener('click', openDeviceSyncModal);
-    document.getElementById('closeSyncModal').addEventListener('click', () => toggleModal('syncModal', false));
-    document.getElementById('closeSyncBtn').addEventListener('click', () => toggleModal('syncModal', false));
+    // P2P Sync Modal
+    const p2pBtn = document.getElementById('p2pSyncModalBtn');
+    if (p2pBtn) p2pBtn.addEventListener('click', openP2pSyncModal);
+    const closeP2p1 = document.getElementById('closeP2pSyncModal');
+    if (closeP2p1) closeP2p1.addEventListener('click', () => toggleModal('p2pSyncModal', false));
+    const closeP2p2 = document.getElementById('closeP2pSyncBtn');
+    if (closeP2p2) closeP2p2.addEventListener('click', () => toggleModal('p2pSyncModal', false));
 
     // Add Account & Modals
     document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
@@ -195,13 +198,10 @@ function setupEventListeners() {
     document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
     importFileInput.addEventListener('change', handleImportVaultFile);
 
-    // WebRTC P2P Sync Handlers
-    document.getElementById('p2pSyncModalBtn').addEventListener('click', openP2pSyncModal);
-    document.getElementById('closeP2pSyncModal').addEventListener('click', () => toggleModal('p2pSyncModal', false));
-    document.getElementById('closeP2pSyncBtn').addEventListener('click', () => toggleModal('p2pSyncModal', false));
-
-    document.getElementById('copyP2pCodeBtn').addEventListener('click', copyP2pCode);
-    document.getElementById('setP2pCodeBtn').addEventListener('click', setP2pCustomCode);
+    const copyP2pBtn = document.getElementById('copyP2pCodeBtn');
+    if (copyP2pBtn) copyP2pBtn.addEventListener('click', copyP2pCode);
+    const setP2pBtn = document.getElementById('setP2pCodeBtn');
+    if (setP2pBtn) setP2pBtn.addEventListener('click', setP2pCustomCode);
 }
 
 function openP2pSyncModal() {
@@ -288,9 +288,14 @@ async function handleAuthSubmit(e) {
         localStorage.setItem(RECOVERY_KEY_STORAGE, recKey);
         await saveToIndexedDB(RECOVERY_KEY_STORAGE, recKey);
 
-        await saveVault();
-        sessionStorage.setItem(SESSION_CACHE_KEY, pass);
-        showDashboard();
+        try {
+            await saveVault();
+            sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+            showDashboard();
+        } catch (vaultErr) {
+            showError(errorEl, vaultErr.message || 'Failed to initialize vault.');
+            return;
+        }
     } else {
         let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
         if (!storedRecKey) {
@@ -755,15 +760,25 @@ async function startCameraScanner() {
     const status = document.getElementById('cameraStatus');
     status.textContent = 'Accessing camera...';
 
+    const getMedia = navigator.mediaDevices?.getUserMedia ||
+                     (navigator.getUserMedia ? (constraints) => new Promise((res, rej) => navigator.getUserMedia(constraints, res, rej)) : null) ||
+                     (navigator.webkitGetUserMedia ? (constraints) => new Promise((res, rej) => navigator.webkitGetUserMedia(constraints, res, rej)) : null) ||
+                     (navigator.mozGetUserMedia ? (constraints) => new Promise((res, rej) => navigator.mozGetUserMedia(constraints, res, rej)) : null);
+
+    if (!getMedia) {
+        status.textContent = 'Camera access requires HTTPS or localhost (or camera is not supported on this browser). Use "Upload Image" instead.';
+        return;
+    }
+
     try {
-        cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        cameraStream = await getMedia.call(navigator.mediaDevices || navigator, { video: { facingMode: 'environment' } });
         video.srcObject = cameraStream;
         video.setAttribute('playsinline', true);
         video.play();
         status.textContent = 'Point camera at QR code...';
         scanCameraFrame();
     } catch (err) {
-        status.textContent = 'Error accessing camera: ' + err.message;
+        status.textContent = 'Error accessing camera: ' + (err.message || 'Permission denied or device in use.');
     }
 }
 
@@ -968,11 +983,9 @@ async function handleImportVaultFile() {
             let decryptedData = null;
 
             if (parsed && typeof parsed === 'object') {
-                if (parsed.ciphertext && parsed.iv && parsed.salt) {
-                    decryptedData = await CryptoVault.decrypt(parsed, masterKeyPassword);
-                } else if (parsed.vault) {
-                    const enc = typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault;
-                    decryptedData = await CryptoVault.decrypt(enc, masterKeyPassword);
+                const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
+                if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
+                    decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
                 } else if (Array.isArray(parsed)) {
                     decryptedData = parsed;
                 }
@@ -990,8 +1003,65 @@ async function handleImportVaultFile() {
                 alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
-            console.error('Import error:', err);
-            alert('Failed to decrypt vault file. Master password mismatch or invalid file format.');
+            console.error('Import error with master password, trying recovery key:', err);
+            
+            // Try decrypting with stored Recovery Key if available
+            let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
+            if (!storedRecKey) storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
+
+            if (storedRecKey) {
+                try {
+                    let rawText = e.target.result.trim();
+                    let parsed = JSON.parse(rawText);
+                    while (typeof parsed === 'string') parsed = JSON.parse(parsed);
+                    const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
+                    if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
+                        const decryptedData = await CryptoVault.decrypt(encObj, storedRecKey);
+                        if (decryptedData && Array.isArray(decryptedData)) {
+                            let count = 0;
+                            for (let acc of decryptedData) {
+                                await saveNewAccount(acc);
+                                count++;
+                            }
+                            buildAccountsDOM();
+                            alert(`Successfully imported ${count} account(s) using Emergency Recovery Key!`);
+                            fileInput.value = '';
+                            return;
+                        }
+                    }
+                } catch (recErr) {
+                    console.error('Recovery key import failed:', recErr);
+                }
+            }
+
+            // If master password and stored recovery key fail, prompt user to enter the password/recovery key used when creating the backup
+            const customPass = prompt('This backup file was created under a different password or recovery key. Please enter the password or recovery key for this backup file:');
+            if (customPass && customPass.trim().length > 0) {
+                try {
+                    let rawText = e.target.result.trim();
+                    let parsed = JSON.parse(rawText);
+                    while (typeof parsed === 'string') parsed = JSON.parse(parsed);
+                    const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
+                    if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
+                        const decryptedData = await CryptoVault.decrypt(encObj, customPass.trim());
+                        if (decryptedData && Array.isArray(decryptedData)) {
+                            let count = 0;
+                            for (let acc of decryptedData) {
+                                await saveNewAccount(acc);
+                                count++;
+                            }
+                            buildAccountsDOM();
+                            alert(`Successfully imported ${count} account(s) from backup file!`);
+                            fileInput.value = '';
+                            return;
+                        }
+                    }
+                } catch (customErr) {
+                    console.error('Custom password import failed:', customErr);
+                }
+            }
+
+            alert('Failed to decrypt vault file. Password mismatch.');
         }
         fileInput.value = '';
     };
