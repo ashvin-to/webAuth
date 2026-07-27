@@ -165,6 +165,15 @@ function setupEventListeners() {
     const closeP2p2 = document.getElementById('closeP2pSyncBtn');
     if (closeP2p2) closeP2p2.addEventListener('click', () => toggleModal('p2pSyncModal', false));
 
+    const changePassBtn = document.getElementById('changePassModalBtn');
+    if (changePassBtn) changePassBtn.addEventListener('click', openChangePassModal);
+    const closeChangePass1 = document.getElementById('closeChangePassModal');
+    if (closeChangePass1) closeChangePass1.addEventListener('click', () => toggleModal('changePassModal', false));
+    const closeChangePass2 = document.getElementById('cancelChangePassModal');
+    if (closeChangePass2) closeChangePass2.addEventListener('click', () => toggleModal('changePassModal', false));
+    const changePassForm = document.getElementById('changePassForm');
+    if (changePassForm) changePassForm.addEventListener('submit', handleChangePasswordSubmit);
+
     const joinP2pBtn = document.getElementById('joinP2pSyncBtn');
     if (joinP2pBtn) joinP2pBtn.addEventListener('click', handleJoinP2pSync);
     const leaveP2pBtn = document.getElementById('leaveP2pSyncBtn');
@@ -339,6 +348,70 @@ function updateP2pStatusUI() {
         statusEl.textContent = 'Waiting for peer...';
         statusEl.className = 'p2p-status-badge badge-connecting';
     }
+}
+
+function openChangePassModal() {
+    const currentInput = document.getElementById('currentMasterPassword');
+    const newInput = document.getElementById('newMasterPassword');
+    const confirmInput = document.getElementById('confirmNewMasterPassword');
+    if (currentInput) currentInput.value = '';
+    if (newInput) newInput.value = '';
+    if (confirmInput) confirmInput.value = '';
+    const errEl = document.getElementById('changePassError');
+    if (errEl) errEl.style.display = 'none';
+    toggleModal('changePassModal', true);
+}
+
+async function handleChangePasswordSubmit(e) {
+    e.preventDefault();
+    const currentInput = document.getElementById('currentMasterPassword').value;
+    const newInput = document.getElementById('newMasterPassword').value;
+    const confirmInput = document.getElementById('confirmNewMasterPassword').value;
+    const errEl = document.getElementById('changePassError');
+
+    const showError = (msg) => {
+        if (errEl) {
+            errEl.textContent = msg;
+            errEl.style.display = 'block';
+        }
+    };
+
+    if (currentInput !== masterKeyPassword) {
+        showError('Current master password does not match.');
+        return;
+    }
+
+    if (!newInput || newInput.trim().length === 0) {
+        showError('Please enter a valid new master password.');
+        return;
+    }
+
+    if (newInput !== confirmInput) {
+        showError('New passwords do not match.');
+        return;
+    }
+
+    const newPassword = newInput.trim();
+    masterKeyPassword = newPassword;
+
+    if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(SESSION_CACHE_KEY, masterKeyPassword);
+    }
+
+    await saveVault();
+
+    if (window.TrysteroSync && TrysteroSync.isActive()) {
+        TrysteroSync.leave();
+        setupTrysteroListeners();
+        const joined = await TrysteroSync.join(masterKeyPassword);
+        if (joined && vaultData.length > 0) {
+            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+            TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+        }
+    }
+
+    toggleModal('changePassModal', false);
+    alert('Master password updated successfully! Your vault has been re-encrypted with your new password.');
 }
 
 function openP2pSyncModal() {
