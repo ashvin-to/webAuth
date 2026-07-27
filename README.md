@@ -31,13 +31,14 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Trade-offs**: Desktop-only. Sync is event-based (unlock and save), not background real-time polling.
 
 ### 3. Real-Time P2P Sync (Trystero WebRTC)
-- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels using a shared pairing room code. When connected, changes sync in real-time between devices, and newly joining peers automatically receive an initial symmetric sync.
-- **Requirements**: Both devices must be online simultaneously with P2P Sync joined.
-- **Signaling & Privacy Notice**:
+- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Devices unlocked with the **same master password** automatically derive the identical room ID and connect in real-time without typing or scanning pairing codes. Newly joining peers automatically receive an initial symmetric sync.
+- **Requirements**: Both devices must be online simultaneously with P2P Sync enabled.
+- **Signaling & ICE/TURN Fallback**:
   - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/torrent` and uses public BitTorrent trackers for WebRTC signaling (connection establishment).
-  - Signaling trackers see connection metadata (IP addresses and room IDs) but **never see vault contents or secrets**.
+  - Signaling trackers see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
+  - Configured with Google STUN and free-tier TURN relay servers (Open Relay Project) as fallback for restrictive NATs/firewalls. Free-tier TURN servers have community bandwidth/reliability limits and cannot guarantee 100% traversal across strict enterprise proxies.
   - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.
-- **Security & Access Control**: The room pairing code acts as the sole access key to the WebRTC room. Treat it like a password (keep it long, random, and do not share publicly). Accounts received from a peer sharing your master password are merged automatically based on unique secret keys.
+- **Security & Access Control**: The room ID is deterministically derived via SHA-256(`masterPassword + fixedSalt`). Raw passwords are never transmitted or stored. Received payloads are verified and decrypted with your master password before accounts are merged by unique secret key.
 
 ---
 
