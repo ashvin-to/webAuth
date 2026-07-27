@@ -238,15 +238,10 @@ const P2PSync = (function () {
         const hostPeerId = `webauth-vault-${roomHash}`;
         updateStatus('connecting', 'Connecting to signaling server...');
 
-        // Attempt 1: Try registering as Host
-        try {
-            peer = new Peer(hostPeerId, { debug: 1 });
-        } catch (err) {
-            updateStatus('error', 'Peer initialization failed');
-            return;
-        }
-
         let isInitialized = false;
+
+        // Create Peer instance targeting host ID
+        peer = new Peer(hostPeerId, { debug: 1 });
 
         peer.on('open', (id) => {
             isInitialized = true;
@@ -261,8 +256,9 @@ const P2PSync = (function () {
         peer.on('error', (err) => {
             console.warn('P2PSync Peer error:', err.type, err.message);
 
-            if (!isInitialized && (err.type === 'unavailable-id' || err.type === 'peer-unavailable')) {
-                // Host ID is taken -> connect as Client
+            if (err.type === 'unavailable-id') {
+                // Host ID is already taken by 1st device! Connect as Client to Host ID
+                isHost = false;
                 try {
                     if (peer) {
                         peer.off();
@@ -270,9 +266,7 @@ const P2PSync = (function () {
                     }
                 } catch (e) {}
 
-                isHost = false;
                 peer = new Peer(undefined, { debug: 1 });
-
                 peer.on('open', (myId) => {
                     updateStatus('connecting', 'Connecting to host device...');
                     const conn = peer.connect(hostPeerId, { reliable: true });
@@ -284,11 +278,10 @@ const P2PSync = (function () {
                     updateStatus('error', `Connection error: ${clientErr.type || 'unknown'}`);
                     scheduleReconnect(5000);
                 });
-
-                peer.on('disconnected', () => {
-                    updateStatus('disconnected', 'Disconnected from signaling server');
-                    scheduleReconnect(3000);
-                });
+            } else if (err.type === 'peer-unavailable') {
+                // Tried connecting to host but host is offline; retry after delay
+                updateStatus('disconnected', 'Host device offline or unreachable');
+                scheduleReconnect(5000);
             } else {
                 updateStatus('error', `Peer error: ${err.type || err.message}`);
                 scheduleReconnect(5000);
