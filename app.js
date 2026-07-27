@@ -189,6 +189,11 @@ function setupEventListeners() {
     document.getElementById('addAccountForm').addEventListener('submit', handleAddAccount);
     document.getElementById('searchInput').addEventListener('input', renderAccountsListOnly);
     document.getElementById('exportBtn').addEventListener('click', exportVaultFile);
+    
+    // Import Backup JSON File
+    const importFileInput = document.getElementById('importJsonFileInput');
+    document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
+    importFileInput.addEventListener('change', handleImportVaultFile);
 
     // Direct File Sync Handlers
     document.getElementById('fileSyncModalBtn').addEventListener('click', openFileSyncModal);
@@ -761,7 +766,7 @@ function scanCameraFrame() {
         
         if (typeof jsQR !== 'undefined') {
             const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert"
+                inversionAttempts: "attemptBoth"
             });
             if (code) {
                 stopCameraScanner();
@@ -789,12 +794,17 @@ function stopCameraScanner() {
 async function parseAndAddQrPayload(payload) {
     logDebug(`Parsing QR payload prefix: ${payload.substring(0, 30)}...`);
 
-    if (payload.startsWith('webauth://sync/') || payload.startsWith('webauth://batch/')) {
+    let cleanPayload = payload.trim();
+    if (cleanPayload.startsWith('webauth://sync/') || cleanPayload.startsWith('webauth://batch/')) {
+        cleanPayload = cleanPayload.replace('webauth://sync/', '').replace('webauth://batch/', '');
         try {
-            const rawStr = payload.replace('webauth://sync/', '').replace('webauth://batch/', '');
-            const jsonStr = decodeURIComponent(rawStr);
-            const rawData = JSON.parse(jsonStr);
+            cleanPayload = decodeURIComponent(cleanPayload);
+        } catch (e) {}
+    }
 
+    if (cleanPayload.startsWith('[') || cleanPayload.startsWith('{')) {
+        try {
+            const rawData = JSON.parse(cleanPayload);
             let importedCount = 0;
             if (Array.isArray(rawData)) {
                 for (let item of rawData) {
@@ -812,14 +822,16 @@ async function parseAndAddQrPayload(payload) {
                         importedCount++;
                     }
                 }
+            } else if (typeof rawData === 'object') {
+                await saveNewAccount(rawData);
+                importedCount++;
             }
             buildAccountsDOM();
             toggleModal('addModal', false);
             alert(`Sync successful! Imported/Updated ${importedCount} 2FA account(s).`);
             return;
         } catch (e) {
-            logDebug(`Error decoding WebAuth sync payload: ${e.message}`);
-            alert('Failed to parse WebAuth sync payload.');
+            logDebug(`Error decoding JSON sync payload: ${e.message}`);
         }
     }
     else if (payload.startsWith('otpauth-migration://') || payload.includes('data=')) {
@@ -891,6 +903,67 @@ function exportVaultFile() {
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+}
+
+async function handleImportVaultFile() {
+    if (!masterKeyPassword) {
+        alert('Please unlock your vault first.');
+        return;
+    }
+    const fileInput = document.getElementById('importJsonFileInput');
+    if (!fileInput.files || !fileInput.files.length) return;
+
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    reader.onload = async function (e) {
+        try {
+            let rawText = e.target.result.trim();
+            let parsed = JSON.parse(rawText);
+            
+            // Un-stringify double JSON encoding if present from backup export
+            if (typeof parsed === 'string') {
+                parsed = JSON.parse(parsed);
+            }
+
+            let decryptedData = null;
+            if (parsed && typeof parsed === 'object') {
+                if (parsed.vault) {
+                    const enc = typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault;
+                    decryptedData = await CryptoVault.decrypt(enc, masterKeyPassword);
+                } else if (parsed.ciphertext && parsed.iv && parsed.salt) {
+                    decryptedData = await CryptoVault.decrypt(parsed, masterKeyPassword);
+                } else if (Array.isArray(parsed)) {
+                    // Plain JSON account list
+                    let imported = 0;
+                    for (let acc of parsed) {
+                        await saveNewAccount(acc);
+                        imported++;
+                    }
+                    buildAccountsDOM();
+                    alert(`Imported ${imported} accounts from JSON file!`);
+                    fileInput.value = '';
+                    return;
+                }
+            }
+
+            if (decryptedData && Array.isArray(decryptedData)) {
+                let count = 0;
+                for (let acc of decryptedData) {
+                    await saveNewAccount(acc);
+                    count++;
+                }
+                buildAccountsDOM();
+                alert(`Successfully imported/restored ${count} account(s) from backup file!`);
+            } else {
+                alert('Invalid vault file format.');
+            }
+        } catch (err) {
+            console.error('Import error:', err);
+            alert('Failed to decrypt or import vault file. Ensure master password matches.');
+        }
+        fileInput.value = '';
+    };
+    reader.readAsText(file);
 }
 
 function toggleModal(id, show) {
