@@ -11,6 +11,7 @@ A lightweight, zero-knowledge, client-side 2FA authenticator web application des
 - **Offline PWA Support**: Can be saved directly to your phone's Home Screen as a native app interface.
 - **Google Authenticator Import**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
 - **Device Sync (No Hosted Server Needed)**: Instantly transfer all 2FA accounts between laptop and phone via high-density single QR code scanning.
+- **Direct File Sync (Google Drive / Cloud)**: Seamlessly sync zero-knowledge encrypted vault data across devices by linking a file in your local Google Drive, Dropbox, or OneDrive folder with zero Client IDs or OAuth setup.
 - **Multi-Layer Data Protection**: Automatically backs up your encrypted vault across both `localStorage` and `IndexedDB`.
 - **Emergency Recovery Key System**: Generates a 16-character recovery key to prevent data loss if a password is forgotten.
 - **QR Code & Image Scanner**: Integrated live camera scanner + drag-and-drop QR screenshot parser.

@@ -60,12 +60,6 @@ async function loadFromIndexedDB(key) {
 
 function logDebug(msg) {
     console.log("[DEBUG]", msg);
-    const content = document.getElementById('debugLogContent');
-    if (content) {
-        const div = document.createElement('div');
-        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        content.appendChild(div);
-    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -156,15 +150,6 @@ function setupEventListeners() {
     document.getElementById('closeSyncModal').addEventListener('click', () => toggleModal('syncModal', false));
     document.getElementById('closeSyncBtn').addEventListener('click', () => toggleModal('syncModal', false));
 
-    // Debug toggle
-    document.getElementById('toggleDebugBtn').addEventListener('click', () => {
-        const consoleCard = document.getElementById('debugConsoleCard');
-        consoleCard.style.display = consoleCard.style.display === 'none' ? 'block' : 'none';
-    });
-    document.getElementById('clearDebugBtn').addEventListener('click', () => {
-        document.getElementById('debugLogContent').innerHTML = '';
-    });
-
     // Add Account & Modals
     document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
     document.getElementById('emptyAddBtn').addEventListener('click', () => openAddModal('manual'));
@@ -201,14 +186,78 @@ function setupEventListeners() {
     document.getElementById('closeCameraModal').addEventListener('click', stopCameraScanner);
     document.getElementById('cancelCameraModal').addEventListener('click', stopCameraScanner);
 
-    // Batch QR Export Modal
-    document.getElementById('batchQrBtn').addEventListener('click', generateBatchQrCode);
-    document.getElementById('closeBatchQrModal').addEventListener('click', () => toggleModal('batchQrModal', false));
-    document.getElementById('closeBatchQrBtn').addEventListener('click', () => toggleModal('batchQrModal', false));
-
     document.getElementById('addAccountForm').addEventListener('submit', handleAddAccount);
     document.getElementById('searchInput').addEventListener('input', renderAccountsListOnly);
     document.getElementById('exportBtn').addEventListener('click', exportVaultFile);
+
+    // Direct File Sync Handlers
+    document.getElementById('fileSyncModalBtn').addEventListener('click', openFileSyncModal);
+    document.getElementById('closeFileSyncModal').addEventListener('click', () => toggleModal('fileSyncModal', false));
+    document.getElementById('closeFileSyncBtn').addEventListener('click', () => toggleModal('fileSyncModal', false));
+    
+    document.getElementById('fileSyncCreateBtn').addEventListener('click', handleFileSyncCreate);
+    document.getElementById('fileSyncOpenBtn').addEventListener('click', handleFileSyncOpen);
+    document.getElementById('fileSyncDisconnectBtn').addEventListener('click', handleFileSyncDisconnect);
+}
+
+async function openFileSyncModal() {
+    await FileSync.init();
+    updateFileSyncStatusUI();
+    toggleModal('fileSyncModal', true);
+}
+
+function updateFileSyncStatusUI() {
+    const statusEl = document.getElementById('fileSyncStatusText');
+    const disconnectBtn = document.getElementById('fileSyncDisconnectBtn');
+    if (FileSync.hasFile()) {
+        const name = FileSync.getFileName() || 'Vault File';
+        statusEl.textContent = `Status: Linked to "${name}" ✅`;
+        statusEl.style.color = '#10B981';
+        disconnectBtn.style.display = 'inline-block';
+    } else {
+        statusEl.textContent = 'Status: No sync file linked';
+        statusEl.style.color = '#9CA3AF';
+        disconnectBtn.style.display = 'none';
+    }
+}
+
+async function handleFileSyncCreate() {
+    const payload = localStorage.getItem(VAULT_STORAGE_KEY);
+    const success = await FileSync.selectSaveFile();
+    if (success) {
+        if (payload) {
+            await FileSync.writeVaultToFile(payload);
+        }
+        updateFileSyncStatusUI();
+        alert('File linked successfully! Vault changes will auto-save to this file.');
+    }
+}
+
+async function handleFileSyncOpen() {
+    if (!masterKeyPassword) {
+        alert('Please unlock your vault first.');
+        return;
+    }
+    const fileContent = await FileSync.selectOpenFile();
+    if (!fileContent) return;
+
+    try {
+        const encryptedPayload = JSON.parse(fileContent);
+        const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
+        vaultData = decryptedData;
+        await saveVault();
+        buildAccountsDOM();
+        updateFileSyncStatusUI();
+        alert('Vault successfully loaded and linked to file!');
+    } catch (e) {
+        alert('Failed to decrypt vault from file. Check master password.');
+    }
+}
+
+async function handleFileSyncDisconnect() {
+    await FileSync.disconnect();
+    updateFileSyncStatusUI();
+    alert('File sync disconnected.');
 }
 
 async function handleAuthSubmit(e) {
@@ -302,6 +351,13 @@ async function saveVault() {
     }
 
     logDebug(`Saved vault & auto backups to localStorage & IndexedDB. Total accounts: ${vaultData.length}`);
+
+    // Auto save to linked sync file (e.g. inside Google Drive / Dropbox / OneDrive folder)
+    if (window.FileSync && FileSync.hasFile()) {
+        FileSync.writeVaultToFile(serializedPayload).then(ok => {
+            if (ok) logDebug('Auto-saved vault to linked sync file.');
+        });
+    }
 }
 
 function showDashboard() {
@@ -575,12 +631,16 @@ async function handleAddAccount(e) {
         }
     } else {
         try {
-            OTPAuth.Secret.fromBase32(secret.replace(/\s+/g, ''));
+            secret = secret.toUpperCase().replace(/\s+/g, '').replace(/=+$/, '');
+            OTPAuth.Secret.fromBase32(secret);
         } catch (e) {
             showError(errorEl, 'Invalid Base32 secret key format.');
             return;
         }
     }
+
+    if (!issuer) issuer = 'Service';
+    if (!account) account = 'Account';
 
     await saveNewAccount({ issuer, account, secret, period, digits });
     toggleModal('addModal', false);
@@ -700,7 +760,9 @@ function scanCameraFrame() {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         
         if (typeof jsQR !== 'undefined') {
-            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert"
+            });
             if (code) {
                 stopCameraScanner();
                 logDebug(`Camera scanned QR length: ${code.data.length}`);
@@ -809,19 +871,6 @@ async function parseAndAddQrPayload(payload) {
         toggleModal('addModal', false);
         alert('Account secret imported successfully!');
     }
-}
-
-function generateBatchQrCode() {
-    if (vaultData.length === 0) {
-        alert('No accounts in vault to export.');
-        return;
-    }
-    toggleModal('batchQrModal', true);
-    const container = document.getElementById('batchQrCanvas');
-
-    const compactData = vaultData.map(a => [a.issuer, a.account, a.secret, a.period || 30, a.digits || 6]);
-    const batchString = 'webauth://sync/' + encodeURIComponent(JSON.stringify(compactData));
-    SVGQRCode.renderInto(container, batchString, 240);
 }
 
 function copyAccountCode(event, id) {

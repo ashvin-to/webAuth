@@ -20,6 +20,7 @@
                 <h1>WebAuth Vault</h1>
             </div>
             <div class="header-actions" id="headerActions" style="display: none;">
+                <button id="fileSyncModalBtn" class="btn btn-secondary">File Sync</button>
                 <button id="syncPeerBtn" class="btn btn-accent">Sync Phone</button>
                 <button id="lockBtn" class="btn btn-secondary">Lock Vault</button>
             </div>
@@ -64,18 +65,8 @@
                     <div class="action-buttons">
                         <button id="scanCameraBtn" class="btn btn-accent">Scan QR</button>
                         <button id="addAccountBtn" class="btn btn-primary">+ Add</button>
-                        <button id="batchQrBtn" class="btn btn-secondary">Export QR</button>
                         <button id="exportBtn" class="btn btn-secondary">Backup File</button>
-                        <button id="toggleDebugBtn" class="btn btn-secondary">Debug Log</button>
                     </div>
-                </div>
-
-                <div id="debugConsoleCard" class="card" style="display: none; margin-bottom: 20px; font-family: monospace; font-size: 0.8rem; max-height: 200px; overflow-y: auto; background: #000;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <strong>Debug Output Log</strong>
-                        <button id="clearDebugBtn" class="btn btn-secondary btn-sm">Clear</button>
-                    </div>
-                    <div id="debugLogContent"></div>
                 </div>
 
                 <div id="accountsList" class="accounts-grid">
@@ -235,19 +226,28 @@
             </div>
         </div>
 
-        <!-- Modal: Batch QR Code Export -->
-        <div id="batchQrModal" class="modal-overlay" style="display: none;">
+        <!-- Modal: Direct File System Sync -->
+        <div id="fileSyncModal" class="modal-overlay" style="display: none;">
             <div class="modal-content card">
                 <div class="modal-header">
-                    <h3>Export Vault via QR Code</h3>
-                    <button class="close-modal" id="closeBatchQrModal">&times;</button>
+                    <h3>Direct File Sync (Google Drive / Local)</h3>
+                    <button class="close-modal" id="closeFileSyncModal">&times;</button>
                 </div>
-                <div class="qr-export-container">
-                    <div id="batchQrCanvas"></div>
-                    <p class="qr-info">Scan this QR code from WebAuth or compatible authenticators to transfer accounts.</p>
+                <div class="file-sync-container" style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+                    <p style="font-size: 0.9rem; color: var(--text-secondary);">
+                        Link a local file directly (e.g. inside your synced Google Drive, Dropbox, or OneDrive folder). Any changes in WebAuth will automatically save to disk and sync across your devices.
+                    </p>
+                    <div class="status-box" style="padding:10px; background:rgba(255,255,255,0.05); border-radius:6px; text-align:center;">
+                        <span id="fileSyncStatusText">Status: No sync file linked</span>
+                    </div>
+                    <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-accent" id="fileSyncCreateBtn">Choose / Create Sync File</button>
+                        <button type="button" class="btn btn-secondary" id="fileSyncOpenBtn">Open Vault File</button>
+                        <button type="button" class="btn btn-secondary" id="fileSyncDisconnectBtn" style="display:none;">Disconnect</button>
+                    </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" id="closeBatchQrBtn">Done</button>
+                <div class="modal-footer" style="margin-top:16px;">
+                    <button type="button" class="btn btn-secondary" id="closeFileSyncBtn">Close</button>
                 </div>
             </div>
         </div>
@@ -256,6 +256,7 @@
     <script src="google-auth-proto.js"></script>
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
+    <script src="file-sync.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
