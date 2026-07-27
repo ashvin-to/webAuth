@@ -12,8 +12,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <!-- OTP Auth Library for TOTP code generation -->
     <script src="https://unpkg.com/otpauth@9.3.1/dist/otpauth.umd.min.js"></script>
-    <!-- Simple P2P Sync Engine (indexedDB-based for cross-device sync) -->
-    <script src="p2p-sync.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -23,7 +21,6 @@
                 <h1>WebAuth Vault</h1>
             </div>
             <div class="header-actions" id="headerActions" style="display: none;">
-                <button id="p2pSyncModalBtn" class="btn btn-accent">Sync Devices</button>
                 <button id="lockBtn" class="btn btn-secondary">Lock Vault</button>
             </div>
         </header>
@@ -88,49 +85,7 @@
             </section>
         </main>
 
-        <!-- Modal: Peer-to-Peer WebRTC Sync Modal -->
-        <div id="p2pSyncModal" class="modal-overlay" style="display: none;">
-            <div class="modal-content card">
-                <div class="modal-header">
-                    <h3>Sync Devices (WebRTC Real-time Sync)</h3>
-                    <button class="close-modal" id="closeP2pSyncModal">&times;</button>
-                </div>
-                <div class="p2p-sync-container">
-                    <div class="p2p-status-box">
-                        <span class="p2p-status-label">Status:</span>
-                        <span id="p2pSyncStatusText" class="p2p-status-badge badge-disconnected">Disconnected</span>
-                    </div>
 
-                    <p class="p2p-description">
-                        Enter the same pairing code on both devices or scan the QR code to establish secure peer-to-peer synchronization.
-                    </p>
-
-                    <div class="p2p-pairing-section">
-                        <label class="p2p-label" for="p2pPairingCode">Current Pairing Code</label>
-                        <div class="p2p-input-group">
-                            <input type="text" id="p2pPairingCode" class="p2p-input p2p-code-display" readonly placeholder="Generating code...">
-                            <button type="button" class="btn btn-secondary btn-sm" id="copyP2pCodeBtn">Copy</button>
-                        </div>
-                    </div>
-
-                    <div class="p2p-custom-section">
-                        <label class="p2p-label" for="p2pCustomCodeInput">Set Custom Pairing Code</label>
-                        <div class="p2p-input-group">
-                            <input type="text" id="p2pCustomCodeInput" class="p2p-input" placeholder="Enter custom code" autocomplete="off" data-bwignore="true" data-lpignore="true">
-                            <button type="button" class="btn btn-primary btn-sm" id="setP2pCodeBtn">Apply</button>
-                        </div>
-                    </div>
-
-                    <div class="p2p-qr-section">
-                        <div class="p2p-qr-label">Pairing QR Code</div>
-                        <div id="p2pQrContainer" class="p2p-qr-container"></div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-primary" id="closeP2pSyncBtn">Close</button>
-                </div>
-            </div>
-        </div>
 
         <!-- Modal: Account Detail / More Info Card -->
         <div id="detailModal" class="modal-overlay" style="display: none;">
@@ -261,9 +216,6 @@
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
     <script src="file-sync.js"></script>
-    <script src="p2p-sync-trystero.js"></script>
-    <script src="p2p-sync-helia.js"></script>
-    <script src="p2p-sync.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
