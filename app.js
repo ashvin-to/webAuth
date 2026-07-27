@@ -719,7 +719,9 @@ function handleImageUpload() {
                 return;
             }
 
-            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "attemptBoth"
+            });
 
             if (code) {
                 logDebug(`QR Code decoded from image. Payload length: ${code.data.length}`);
@@ -919,14 +921,34 @@ async function handleImportVaultFile() {
     reader.onload = async function (e) {
         try {
             let rawText = e.target.result.trim();
-            let parsed = JSON.parse(rawText);
+            let parsed = null;
+
+            try {
+                parsed = JSON.parse(rawText);
+            } catch (err) {
+                // Not JSON, check if it's an otpauth / otpauth-migration string file
+                if (rawText.startsWith('otpauth') || rawText.startsWith('webauth')) {
+                    await parseAndAddQrPayload(rawText);
+                    fileInput.value = '';
+                    return;
+                }
+            }
             
             // Loop un-stringifying in case of multi-nested stringified JSON
             while (typeof parsed === 'string') {
                 try {
                     parsed = JSON.parse(parsed);
                 } catch (e) {
-                    break;
+                    // String might be raw encrypted payload string from backup
+                    if (parsed.startsWith('{') && parsed.includes('ciphertext')) {
+                        parsed = JSON.parse(parsed);
+                    } else if (parsed.startsWith('otpauth') || parsed.startsWith('webauth')) {
+                        await parseAndAddQrPayload(parsed);
+                        fileInput.value = '';
+                        return;
+                    } else {
+                        break;
+                    }
                 }
             }
 
@@ -956,7 +978,7 @@ async function handleImportVaultFile() {
             }
         } catch (err) {
             console.error('Import error:', err);
-            alert('Failed to decrypt vault file. Master password mismatch or invalid file.');
+            alert('Failed to decrypt vault file. Master password mismatch or invalid file format.');
         }
         fileInput.value = '';
     };
