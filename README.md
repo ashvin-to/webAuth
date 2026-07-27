@@ -9,6 +9,7 @@ A lightweight, fully client-side 2FA (TOTP) authenticator web application design
 - **Zero-Knowledge Architecture**: All encryption and decryption occur locally inside your browser using **AES-256-GCM** (WebCrypto API) and **PBKDF2 key derivation** with **100,000 iterations** of SHA-256. No unencrypted vault data or master passwords ever leave your machine.
 - **Universal TOTP Compatibility**: Supports Google Authenticator, Microsoft Authenticator, Authy, Aegis, Bitwarden, 2FAS, GitHub, Amazon, Steam, and all standard 2FA services.
 - **Google Authenticator Migration**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
+- **In-App Password Management**: Change your master password anytime with full automatic re-encryption across `localStorage`, `IndexedDB`, linked folder sync, and active P2P sync rooms.
 - **Multi-Layer Data Protection**: Vault data and emergency auto-backups are persisted locally across both `localStorage` and `IndexedDB`.
 - **Emergency Recovery Key System**: Automatically generates a 16-character recovery key to decrypt your vault if you forget your master password.
 - **Offline Local QR Encoder**: High-density QR generation (`qr-helper.js`) built completely in-house without external third-party image API calls.
@@ -26,19 +27,20 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Trade-offs**: Fully manual process. You control transport and storage.
 
 ### 2. Linked Folder Sync (Drive / Dropbox / Syncthing)
-- **What it does**: Links your vault directly to a `webauth_vault.json` file inside a folder managed by a desktop sync client (e.g., Google Drive for Desktop, Dropbox, OneDrive, or Syncthing). The app automatically performs a **pull-merge-on-unlock** when you open the vault and a **push-on-save** whenever accounts are modified.
+- **What it does**: Links your vault directly to a `webauth_vault.json` file inside a folder managed by a desktop sync client (e.g., Google Drive for Desktop, Dropbox, OneDrive, or Syncthing). The app automatically performs a **pull-merge-on-unlock** when you open the vault and a **push-on-save** whenever accounts are modified (including automatically bridging accounts received via P2P sync).
 - **Requirements**: Requires the native **File System Access API** (supported in desktop Chrome, Edge, and Opera). Linux users typically pair this with Syncthing, rclone, or a mounted cloud path.
-- **Trade-offs**: Desktop-only. Sync is event-based (unlock and save), not background real-time polling.
+- **Trade-offs**: Desktop-only. Sync is event-based (unlock, save, and P2P merge), not background real-time polling.
 
 ### 3. Real-Time P2P Sync (Trystero WebRTC)
-- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Devices unlocked with the **same master password** automatically derive the identical room ID and connect in real-time without typing or scanning pairing codes. Newly joining peers automatically receive an initial symmetric sync.
-- **Requirements**: Both devices must be online simultaneously with P2P Sync enabled.
+- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Devices unlocked with the **same master password** automatically derive identical room IDs and connect in real-time without typing or scanning pairing codes. Newly joining peers automatically receive an initial symmetric sync.
+- **Peer Approval Gate**: Unrecognized devices are assigned a persistent 8-character fingerprint (`deviceId`). Incoming broadcasts from unapproved devices trigger an explicit **Approve / Ignore** prompt before any accounts are merged.
+- **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
+- **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers (`SHA-256(passphrase + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
   - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/torrent` and uses public BitTorrent trackers for WebRTC signaling (connection establishment).
   - Signaling trackers see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
-  - Configured with Google STUN and free-tier TURN relay servers (Open Relay Project) as fallback for restrictive NATs/firewalls. Free-tier TURN servers have community bandwidth/reliability limits and cannot guarantee 100% traversal across strict enterprise proxies.
+  - Configured with Google STUN and free-tier TURN relay servers (Open Relay Project) as fallback for restrictive NATs/firewalls. Free-tier TURN servers have community bandwidth/reliability limits.
   - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.
-- **Security & Access Control**: The room ID is deterministically derived via SHA-256(`masterPassword + fixedSalt`). Raw passwords are never transmitted or stored. Received payloads are verified and decrypted with your master password before accounts are merged by unique secret key.
 
 ---
 

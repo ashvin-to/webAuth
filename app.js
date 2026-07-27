@@ -364,9 +364,9 @@ function openChangePassModal() {
 
 async function handleChangePasswordSubmit(e) {
     e.preventDefault();
-    const currentInput = document.getElementById('currentMasterPassword').value;
-    const newInput = document.getElementById('newMasterPassword').value;
-    const confirmInput = document.getElementById('confirmNewMasterPassword').value;
+    const currentInput = (document.getElementById('currentMasterPassword')?.value || '').trim();
+    const newInput = (document.getElementById('newMasterPassword')?.value || '').trim();
+    const confirmInput = (document.getElementById('confirmNewMasterPassword')?.value || '').trim();
     const errEl = document.getElementById('changePassError');
 
     const showError = (msg) => {
@@ -376,13 +376,15 @@ async function handleChangePasswordSubmit(e) {
         }
     };
 
+    if (errEl) errEl.style.display = 'none';
+
     if (currentInput !== masterKeyPassword) {
         showError('Current master password does not match.');
         return;
     }
 
-    if (!newInput || newInput.trim().length === 0) {
-        showError('Please enter a valid new master password.');
+    if (!newInput || newInput.length < 6) {
+        showError('New master password must be at least 6 characters.');
         return;
     }
 
@@ -391,27 +393,45 @@ async function handleChangePasswordSubmit(e) {
         return;
     }
 
-    const newPassword = newInput.trim();
-    masterKeyPassword = newPassword;
+    try {
+        const newPassword = newInput;
+        masterKeyPassword = newPassword;
 
-    if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem(SESSION_CACHE_KEY, masterKeyPassword);
-    }
-
-    await saveVault();
-
-    if (window.TrysteroSync && TrysteroSync.isActive()) {
-        TrysteroSync.leave();
-        setupTrysteroListeners();
-        const joined = await TrysteroSync.join(masterKeyPassword);
-        if (joined && vaultData.length > 0) {
-            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-            TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+        if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.setItem(SESSION_CACHE_KEY, masterKeyPassword);
         }
-    }
 
-    toggleModal('changePassModal', false);
-    alert('Master password updated successfully! Your vault has been re-encrypted with your new password.');
+        // Re-encrypt local storage & IndexedDB
+        await saveVault();
+
+        // Re-encrypt linked file if present
+        if (window.FileSync && FileSync.hasFile()) {
+            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+            await FileSync.writeVaultToFile(JSON.stringify(encryptedPayload));
+        }
+
+        // Re-join P2P room with new password hash if active
+        if (window.TrysteroSync && TrysteroSync.isActive()) {
+            TrysteroSync.leave();
+            setupTrysteroListeners();
+            const customPass = TrysteroSync.getCustomPassphrase();
+            const joined = await TrysteroSync.join(customPass || masterKeyPassword);
+            if (joined && vaultData.length > 0) {
+                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+            }
+        }
+
+        document.getElementById('currentMasterPassword').value = '';
+        document.getElementById('newMasterPassword').value = '';
+        document.getElementById('confirmNewMasterPassword').value = '';
+
+        toggleModal('changePassModal', false);
+        alert('Master password updated successfully! Your vault has been re-encrypted with your new password.');
+    } catch (err) {
+        console.error('Error changing master password:', err);
+        showError('Failed to change master password: ' + (err.message || err));
+    }
 }
 
 function openP2pSyncModal() {
