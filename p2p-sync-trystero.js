@@ -6,13 +6,51 @@
 const STORAGE_KEY_ROOM = 'webauth_trystero_room';
 const STORAGE_KEY_ACTIVE = 'webauth_trystero_active';
 
+const ICE_SERVERS = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:openrelay.metered.ca:80' },
+    {
+        urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    }
+];
+
 let roomInstance = null;
 let sendVaultAction = null;
 let getVaultAction = null;
 let peerCount = 0;
 let receiveCallbacks = new Set();
 let peerChangeCallbacks = new Set();
+let errorCallbacks = new Set();
+let lastErrorMsg = null;
 let isJoined = false;
+
+function notifyError(msg) {
+    lastErrorMsg = msg;
+    errorCallbacks.forEach(cb => {
+        try { cb(msg); } catch (e) {}
+    });
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('error', (e) => {
+        if (e && e.message && e.message.includes('Ice connection failed')) {
+            notifyError('Connection to peer failed — this can happen on restrictive networks');
+        }
+    });
+
+    window.addEventListener('unhandledrejection', (e) => {
+        if (e && e.reason && (e.reason.message || String(e.reason)).includes('Ice connection failed')) {
+            notifyError('Connection to peer failed — this can happen on restrictive networks');
+        }
+    });
+}
 
 function generatePairingCode() {
     const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -68,7 +106,13 @@ async function join(roomIdOverride) {
 
     try {
         const { joinRoom } = await import('https://esm.sh/trystero@0.19.0/torrent');
-        roomInstance = joinRoom({ appId: 'webauth-vault-sync' }, roomId);
+        const rtcOpts = {
+            appId: 'webauth-vault-sync',
+            rtcConfig: { iceServers: ICE_SERVERS },
+            config: { iceServers: ICE_SERVERS },
+            iceServers: ICE_SERVERS
+        };
+        roomInstance = joinRoom(rtcOpts, roomId);
         
         const [sendVault, getVault] = roomInstance.makeAction('vault');
         sendVaultAction = sendVault;
@@ -149,12 +193,24 @@ function isConnected() {
     return isJoined;
 }
 
+function onError(cb) {
+    if (typeof cb === 'function') {
+        errorCallbacks.add(cb);
+    }
+}
+
+function getLastError() {
+    return lastErrorMsg;
+}
+
 window.TrysteroSync = {
     join,
     leave,
     broadcast,
     onReceive,
     onPeerChange,
+    onError,
+    getLastError,
     getPeerCount,
     getRoomId,
     setRoomId,
