@@ -145,13 +145,7 @@ function setupEventListeners() {
         });
     }
 
-    // P2P Sync Modal
-    const p2pBtn = document.getElementById('p2pSyncModalBtn');
-    if (p2pBtn) p2pBtn.addEventListener('click', openP2pSyncModal);
-    const closeP2p1 = document.getElementById('closeP2pSyncModal');
-    if (closeP2p1) closeP2p1.addEventListener('click', () => toggleModal('p2pSyncModal', false));
-    const closeP2p2 = document.getElementById('closeP2pSyncBtn');
-    if (closeP2p2) closeP2p2.addEventListener('click', () => toggleModal('p2pSyncModal', false));
+
 
     // Add Account & Modals
     document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
@@ -198,66 +192,10 @@ function setupEventListeners() {
     document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
     importFileInput.addEventListener('change', handleImportVaultFile);
 
-    const copyP2pBtn = document.getElementById('copyP2pCodeBtn');
-    if (copyP2pBtn) copyP2pBtn.addEventListener('click', copyP2pCode);
-    const setP2pBtn = document.getElementById('setP2pCodeBtn');
-    if (setP2pBtn) setP2pBtn.addEventListener('click', setP2pCustomCode);
+
 }
 
-function openP2pSyncModal() {
-    toggleModal('p2pSyncModal', true);
-    const pairingCode = P2PSync.getPairingCode();
-    document.getElementById('p2pPairingCode').value = pairingCode;
-    updateP2pStatusUI();
 
-    const container = document.getElementById('p2pQrContainer');
-    if (container) {
-        SVGQRCode.renderInto(container, pairingCode, 200);
-    }
-}
-
-function updateP2pStatusUI() {
-    const statusEl = document.getElementById('p2pSyncStatusText');
-    if (!statusEl) return;
-    const statusInfo = P2PSync.getStatus();
-
-    if (statusInfo.connected) {
-        statusEl.textContent = `Connected (${statusInfo.peerCount} device(s) online)`;
-        statusEl.className = 'p2p-status-badge badge-connected';
-    } else if (statusInfo.status === 'connecting') {
-        statusEl.textContent = 'Connecting...';
-        statusEl.className = 'p2p-status-badge badge-connecting';
-    } else {
-        statusEl.textContent = 'Disconnected (Waiting for paired device)';
-        statusEl.className = 'p2p-status-badge badge-disconnected';
-    }
-}
-
-function copyP2pCode() {
-    const codeInput = document.getElementById('p2pPairingCode');
-    if (codeInput && codeInput.value) {
-        navigator.clipboard.writeText(codeInput.value);
-        alert('Pairing code copied to clipboard!');
-    }
-}
-
-function setP2pCustomCode() {
-    const customInput = document.getElementById('p2pCustomCodeInput');
-    const newCode = customInput ? customInput.value.trim() : '';
-    if (!newCode) {
-        alert('Please enter a valid pairing code.');
-        return;
-    }
-    P2PSync.setPairingCode(newCode);
-    document.getElementById('p2pPairingCode').value = P2PSync.getPairingCode();
-    customInput.value = '';
-    
-    const container = document.getElementById('p2pQrContainer');
-    if (container) {
-        SVGQRCode.renderInto(container, P2PSync.getPairingCode(), 200);
-    }
-    alert('Pairing code updated!');
-}
 
 async function handleAuthSubmit(e) {
     e.preventDefault();
@@ -334,7 +272,7 @@ async function handleAuthSubmit(e) {
     }
 }
 
-async function saveVault(isRemoteSync = false) {
+async function saveVault() {
     if (!masterKeyPassword) return;
     
     const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
@@ -355,11 +293,6 @@ async function saveVault(isRemoteSync = false) {
     }
 
     logDebug(`Saved vault & auto backups to localStorage & IndexedDB. Total accounts: ${vaultData.length}`);
-
-    // Broadcast encrypted payload over WebRTC P2P to paired devices (if not triggered by incoming remote sync)
-    if (!isRemoteSync && window.P2PSync) {
-        P2PSync.broadcastVault(serializedPayload);
-    }
 }
 
 function showDashboard() {
@@ -368,38 +301,6 @@ function showDashboard() {
     document.getElementById('headerActions').style.display = 'block';
     buildAccountsDOM();
     startTotpTimer();
-
-    // Initialize P2P Sync engine (simple, cross-device sync)
-    if (window.P2PSync) {
-        P2PSync.init();
-        P2PSync.onStatusChange(updateP2pStatusUI);
-        P2PSync.onVaultReceived(async (payload) => {
-            if (!masterKeyPassword) return;
-            try {
-                const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
-                const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
-                if (decryptedData && Array.isArray(decryptedData)) {
-                    // Merge remote accounts with local accounts (avoiding duplicate secrets)
-                    const existingSecrets = new Set(vaultData.map(a => a.secret));
-                    let mergedCount = 0;
-                    for (let remoteAcc of decryptedData) {
-                        if (!existingSecrets.has(remoteAcc.secret)) {
-                            vaultData.push(remoteAcc);
-                            existingSecrets.add(remoteAcc.secret);
-                            mergedCount++;
-                        }
-                    }
-                    if (mergedCount > 0 || decryptedData.length > vaultData.length) {
-                        await saveVault(true); // Save locally without echoing back broadcast
-                        buildAccountsDOM();
-                        logDebug(`Remote WebRTC P2P sync applied: merged ${mergedCount} new accounts.`);
-                    }
-                }
-            } catch (err) {
-                console.error('P2P sync payload decrypt error:', err);
-            }
-        });
-    }
 }
 
 function lockVault() {
