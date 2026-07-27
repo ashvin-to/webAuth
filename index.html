@@ -134,33 +134,12 @@
                     </div>
 
                     <p class="p2p-description">
-                        Connect two or more online devices (desktop or mobile) using the same pairing code. Devices sync automatically in real-time while connected.
+                        Devices unlocked with the same master password automatically find each other in real-time — no code needed.
                     </p>
 
-                    <div style="margin-bottom: 15px;">
-                        <label class="p2p-label" for="p2pPairingCode">Current Pairing Code</label>
-                        <div style="display: flex; gap: 8px; margin-top: 4px;">
-                            <input type="text" id="p2pPairingCode" class="p2p-input" readonly style="font-family: monospace; font-weight: bold; letter-spacing: 1px;" placeholder="Generating code...">
-                            <button type="button" class="btn btn-secondary btn-sm" id="copyP2pCodeBtn">Copy</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 15px;">
-                        <label class="p2p-label" for="p2pCustomCodeInput">Set Custom Pairing Code</label>
-                        <div style="display: flex; gap: 8px; margin-top: 4px;">
-                            <input type="text" id="p2pCustomCodeInput" class="p2p-input" placeholder="Enter custom code" autocomplete="off" data-bwignore="true" data-lpignore="true">
-                            <button type="button" class="btn btn-primary btn-sm" id="setP2pCodeBtn">Apply</button>
-                        </div>
-                    </div>
-
-                    <div style="margin-bottom: 15px; text-align: center;">
-                        <div style="font-size: 0.85rem; color: var(--text-muted, #888); margin-bottom: 6px;">Pairing QR Code</div>
-                        <div id="p2pQrContainer" style="display: inline-block; padding: 8px; background: white; border-radius: 8px;"></div>
-                    </div>
-
                     <div style="display: flex; gap: 10px; margin-top: 15px;">
-                        <button type="button" class="btn btn-primary" id="joinP2pSyncBtn" style="flex: 1;">Join P2P Sync</button>
-                        <button type="button" class="btn btn-danger" id="leaveP2pSyncBtn" style="flex: 1;">Leave P2P Sync</button>
+                        <button type="button" class="btn btn-primary" id="joinP2pSyncBtn" style="flex: 1;">Enable P2P Auto-Sync</button>
+                        <button type="button" class="btn btn-danger" id="leaveP2pSyncBtn" style="flex: 1;">Disable P2P Auto-Sync</button>
                     </div>
                 </div>
                 <div class="modal-footer">

@@ -165,10 +165,6 @@ function setupEventListeners() {
     const closeP2p2 = document.getElementById('closeP2pSyncBtn');
     if (closeP2p2) closeP2p2.addEventListener('click', () => toggleModal('p2pSyncModal', false));
 
-    const copyP2pBtn = document.getElementById('copyP2pCodeBtn');
-    if (copyP2pBtn) copyP2pBtn.addEventListener('click', copyP2pCode);
-    const setP2pBtn = document.getElementById('setP2pCodeBtn');
-    if (setP2pBtn) setP2pBtn.addEventListener('click', setP2pCustomCode);
     const joinP2pBtn = document.getElementById('joinP2pSyncBtn');
     if (joinP2pBtn) joinP2pBtn.addEventListener('click', handleJoinP2pSync);
     const leaveP2pBtn = document.getElementById('leaveP2pSyncBtn');
@@ -347,45 +343,7 @@ function updateP2pStatusUI() {
 
 function openP2pSyncModal() {
     toggleModal('p2pSyncModal', true);
-    if (window.TrysteroSync) {
-        const roomId = TrysteroSync.getRoomId();
-        const codeInput = document.getElementById('p2pPairingCode');
-        if (codeInput) codeInput.value = roomId;
-
-        const container = document.getElementById('p2pQrContainer');
-        if (container) {
-            SVGQRCode.renderInto(container, roomId, 180);
-        }
-    }
     updateP2pStatusUI();
-}
-
-function copyP2pCode() {
-    const codeInput = document.getElementById('p2pPairingCode');
-    if (codeInput && codeInput.value) {
-        navigator.clipboard.writeText(codeInput.value);
-        alert('P2P Pairing code copied to clipboard!');
-    }
-}
-
-function setP2pCustomCode() {
-    if (!window.TrysteroSync) return;
-    const customInput = document.getElementById('p2pCustomCodeInput');
-    const newCode = customInput ? customInput.value.trim() : '';
-    if (!newCode) {
-        alert('Please enter a valid pairing code.');
-        return;
-    }
-    TrysteroSync.setRoomId(newCode);
-    document.getElementById('p2pPairingCode').value = TrysteroSync.getRoomId();
-    customInput.value = '';
-
-    const container = document.getElementById('p2pQrContainer');
-    if (container) {
-        SVGQRCode.renderInto(container, TrysteroSync.getRoomId(), 180);
-    }
-    updateP2pStatusUI();
-    alert('Pairing code updated!');
 }
 
 async function handleJoinP2pSync() {
@@ -393,8 +351,9 @@ async function handleJoinP2pSync() {
         alert('P2P Sync module is unavailable.');
         return;
     }
+    if (!masterKeyPassword) return;
     setupTrysteroListeners();
-    const joined = await TrysteroSync.join();
+    const joined = await TrysteroSync.join(masterKeyPassword);
     updateP2pStatusUI();
     if (joined) {
         if (vaultData.length > 0 && masterKeyPassword) {
@@ -585,9 +544,9 @@ async function showDashboard() {
         }
     }
 
-    if (window.TrysteroSync && TrysteroSync.isActive()) {
+    if (window.TrysteroSync && TrysteroSync.isActive() && masterKeyPassword) {
         setupTrysteroListeners();
-        await TrysteroSync.join();
+        await TrysteroSync.join(masterKeyPassword);
     }
 }
 

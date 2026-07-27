@@ -52,36 +52,15 @@ if (typeof window !== 'undefined') {
     });
 }
 
-function generatePairingCode() {
-    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const randomBuffer = new Uint8Array(12);
-    crypto.getRandomValues(randomBuffer);
-    let code = '';
-    for (let i = 0; i < 12; i++) {
-        code += charset[randomBuffer[i] % charset.length];
-    }
-    return code;
-}
+const ROOM_ID_SALT = 'webauth-vault-trystero-room-v1';
 
-function getRoomId() {
-    let saved = localStorage.getItem(STORAGE_KEY_ROOM);
-    if (!saved || typeof saved !== 'string' || !saved.trim()) {
-        saved = generatePairingCode();
-        localStorage.setItem(STORAGE_KEY_ROOM, saved);
-    }
-    return saved.trim().toUpperCase();
-}
-
-function setRoomId(code) {
-    if (!code || typeof code !== 'string') return;
-    const cleaned = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (cleaned.length > 0) {
-        localStorage.setItem(STORAGE_KEY_ROOM, cleaned);
-        if (isJoined) {
-            leave();
-            join(cleaned);
-        }
-    }
+async function deriveRoomId(masterPassword) {
+    if (!masterPassword) return null;
+    const enc = new TextEncoder();
+    const data = enc.encode(masterPassword + ROOM_ID_SALT);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function isActive() {
@@ -98,8 +77,10 @@ function notifyPeerChange(peerId, action) {
     });
 }
 
-async function join(roomIdOverride) {
-    const roomId = roomIdOverride || getRoomId();
+async function join(masterPassword) {
+    if (!masterPassword) return false;
+    const roomId = await deriveRoomId(masterPassword);
+    if (!roomId) return false;
     if (isJoined && roomInstance) {
         return true;
     }
@@ -212,8 +193,7 @@ window.TrysteroSync = {
     onError,
     getLastError,
     getPeerCount,
-    getRoomId,
-    setRoomId,
+    deriveRoomId,
     isActive,
     setActive,
     isConnected: () => isJoined
