@@ -266,15 +266,13 @@ const P2PSync = (function () {
 
         peer.on('error', (err) => {
             if (err.type === 'unavailable-id') {
-                // Expected when 2nd device joins room - switch seamlessly to Client mode
                 console.log('Room Host already active. Connecting as Client...');
                 isHost = false;
-                try {
-                    if (peer) {
-                        peer.off();
-                        peer.destroy();
-                    }
-                } catch (e) {}
+                const oldPeer = peer;
+                peer = null;
+                if (oldPeer) {
+                    try { oldPeer.off(); oldPeer.destroy(); } catch (e) {}
+                }
 
                 peer = new Peer(undefined, peerConfig);
                 peer.on('open', (myId) => {
