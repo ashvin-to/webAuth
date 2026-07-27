@@ -896,7 +896,8 @@ function copyAccountCode(event, id) {
 }
 
 function exportVaultFile() {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(localStorage.getItem(VAULT_STORAGE_KEY)));
+    const rawVaultData = localStorage.getItem(VAULT_STORAGE_KEY) || '[]';
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(rawVaultData);
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute("href", dataStr);
     downloadAnchor.setAttribute("download", "webauth_encrypted_backup.json");
@@ -920,29 +921,25 @@ async function handleImportVaultFile() {
             let rawText = e.target.result.trim();
             let parsed = JSON.parse(rawText);
             
-            // Un-stringify double JSON encoding if present from backup export
-            if (typeof parsed === 'string') {
-                parsed = JSON.parse(parsed);
+            // Loop un-stringifying in case of multi-nested stringified JSON
+            while (typeof parsed === 'string') {
+                try {
+                    parsed = JSON.parse(parsed);
+                } catch (e) {
+                    break;
+                }
             }
 
             let decryptedData = null;
+
             if (parsed && typeof parsed === 'object') {
-                if (parsed.vault) {
+                if (parsed.ciphertext && parsed.iv && parsed.salt) {
+                    decryptedData = await CryptoVault.decrypt(parsed, masterKeyPassword);
+                } else if (parsed.vault) {
                     const enc = typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault;
                     decryptedData = await CryptoVault.decrypt(enc, masterKeyPassword);
-                } else if (parsed.ciphertext && parsed.iv && parsed.salt) {
-                    decryptedData = await CryptoVault.decrypt(parsed, masterKeyPassword);
                 } else if (Array.isArray(parsed)) {
-                    // Plain JSON account list
-                    let imported = 0;
-                    for (let acc of parsed) {
-                        await saveNewAccount(acc);
-                        imported++;
-                    }
-                    buildAccountsDOM();
-                    alert(`Imported ${imported} accounts from JSON file!`);
-                    fileInput.value = '';
-                    return;
+                    decryptedData = parsed;
                 }
             }
 
@@ -953,13 +950,13 @@ async function handleImportVaultFile() {
                     count++;
                 }
                 buildAccountsDOM();
-                alert(`Successfully imported/restored ${count} account(s) from backup file!`);
+                alert(`Successfully imported ${count} account(s) from file!`);
             } else {
-                alert('Invalid vault file format.');
+                alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
             console.error('Import error:', err);
-            alert('Failed to decrypt or import vault file. Ensure master password matches.');
+            alert('Failed to decrypt vault file. Master password mismatch or invalid file.');
         }
         fileInput.value = '';
     };
