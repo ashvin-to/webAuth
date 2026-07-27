@@ -379,10 +379,21 @@ function showDashboard() {
                 const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
                 const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
                 if (decryptedData && Array.isArray(decryptedData)) {
-                    vaultData = decryptedData;
-                    await saveVault(true); // Save locally without echoing back broadcast
-                    buildAccountsDOM();
-                    logDebug('Remote WebRTC P2P sync update applied!');
+                    // Merge remote accounts with local accounts (avoiding duplicate secrets)
+                    const existingSecrets = new Set(vaultData.map(a => a.secret));
+                    let mergedCount = 0;
+                    for (let remoteAcc of decryptedData) {
+                        if (!existingSecrets.has(remoteAcc.secret)) {
+                            vaultData.push(remoteAcc);
+                            existingSecrets.add(remoteAcc.secret);
+                            mergedCount++;
+                        }
+                    }
+                    if (mergedCount > 0 || decryptedData.length > vaultData.length) {
+                        await saveVault(true); // Save locally without echoing back broadcast
+                        buildAccountsDOM();
+                        logDebug(`Remote WebRTC P2P sync applied: merged ${mergedCount} new accounts.`);
+                    }
                 }
             } catch (err) {
                 console.error('P2P sync payload decrypt error:', err);

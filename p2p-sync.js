@@ -102,6 +102,18 @@ const P2PSync = (function () {
         conn.on('open', () => {
             activeConnections.set(peerId, conn);
             updateStatus('connected', `Connected to peer (${activeConnections.size} active)`);
+            
+            // Send current local vault state immediately to newly connected peer
+            const currentPayload = localStorage.getItem('webauth_vault_data');
+            if (currentPayload) {
+                try {
+                    conn.send(JSON.stringify({
+                        type: 'VAULT_SYNC',
+                        payload: currentPayload,
+                        timestamp: Date.now()
+                    }));
+                } catch (e) {}
+            }
         });
 
         conn.on('data', (data) => {
