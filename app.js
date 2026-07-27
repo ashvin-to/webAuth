@@ -195,74 +195,68 @@ function setupEventListeners() {
     document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
     importFileInput.addEventListener('change', handleImportVaultFile);
 
-    // Direct File Sync Handlers
-    document.getElementById('fileSyncModalBtn').addEventListener('click', openFileSyncModal);
-    document.getElementById('closeFileSyncModal').addEventListener('click', () => toggleModal('fileSyncModal', false));
-    document.getElementById('closeFileSyncBtn').addEventListener('click', () => toggleModal('fileSyncModal', false));
-    
-    document.getElementById('fileSyncCreateBtn').addEventListener('click', handleFileSyncCreate);
-    document.getElementById('fileSyncOpenBtn').addEventListener('click', handleFileSyncOpen);
-    document.getElementById('fileSyncDisconnectBtn').addEventListener('click', handleFileSyncDisconnect);
+    // WebRTC P2P Sync Handlers
+    document.getElementById('p2pSyncModalBtn').addEventListener('click', openP2pSyncModal);
+    document.getElementById('closeP2pSyncModal').addEventListener('click', () => toggleModal('p2pSyncModal', false));
+    document.getElementById('closeP2pSyncBtn').addEventListener('click', () => toggleModal('p2pSyncModal', false));
+
+    document.getElementById('copyP2pCodeBtn').addEventListener('click', copyP2pCode);
+    document.getElementById('setP2pCodeBtn').addEventListener('click', setP2pCustomCode);
 }
 
-async function openFileSyncModal() {
-    await FileSync.init();
-    updateFileSyncStatusUI();
-    toggleModal('fileSyncModal', true);
+function openP2pSyncModal() {
+    toggleModal('p2pSyncModal', true);
+    const pairingCode = P2PSync.getPairingCode();
+    document.getElementById('p2pPairingCode').value = pairingCode;
+    updateP2pStatusUI();
+
+    const container = document.getElementById('p2pQrContainer');
+    if (container) {
+        SVGQRCode.renderInto(container, pairingCode, 200);
+    }
 }
 
-function updateFileSyncStatusUI() {
-    const statusEl = document.getElementById('fileSyncStatusText');
-    const disconnectBtn = document.getElementById('fileSyncDisconnectBtn');
-    if (FileSync.hasFile()) {
-        const name = FileSync.getFileName() || 'Vault File';
-        statusEl.textContent = `Status: Linked to "${name}" ✅`;
-        statusEl.style.color = '#10B981';
-        disconnectBtn.style.display = 'inline-block';
+function updateP2pStatusUI() {
+    const statusEl = document.getElementById('p2pSyncStatusText');
+    if (!statusEl) return;
+    const statusInfo = P2PSync.getStatus();
+
+    if (statusInfo.connected) {
+        statusEl.textContent = `Connected (${statusInfo.peerCount} device(s) online)`;
+        statusEl.className = 'p2p-status-badge badge-connected';
+    } else if (statusInfo.status === 'connecting') {
+        statusEl.textContent = 'Connecting...';
+        statusEl.className = 'p2p-status-badge badge-connecting';
     } else {
-        statusEl.textContent = 'Status: No sync file linked';
-        statusEl.style.color = '#9CA3AF';
-        disconnectBtn.style.display = 'none';
+        statusEl.textContent = 'Disconnected (Waiting for paired device)';
+        statusEl.className = 'p2p-status-badge badge-disconnected';
     }
 }
 
-async function handleFileSyncCreate() {
-    const payload = localStorage.getItem(VAULT_STORAGE_KEY);
-    const success = await FileSync.selectSaveFile();
-    if (success) {
-        if (payload) {
-            await FileSync.writeVaultToFile(payload);
-        }
-        updateFileSyncStatusUI();
-        alert('File linked successfully! Vault changes will auto-save to this file.');
+function copyP2pCode() {
+    const codeInput = document.getElementById('p2pPairingCode');
+    if (codeInput && codeInput.value) {
+        navigator.clipboard.writeText(codeInput.value);
+        alert('Pairing code copied to clipboard!');
     }
 }
 
-async function handleFileSyncOpen() {
-    if (!masterKeyPassword) {
-        alert('Please unlock your vault first.');
+function setP2pCustomCode() {
+    const customInput = document.getElementById('p2pCustomCodeInput');
+    const newCode = customInput ? customInput.value.trim() : '';
+    if (!newCode) {
+        alert('Please enter a valid pairing code.');
         return;
     }
-    const fileContent = await FileSync.selectOpenFile();
-    if (!fileContent) return;
-
-    try {
-        const encryptedPayload = JSON.parse(fileContent);
-        const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
-        vaultData = decryptedData;
-        await saveVault();
-        buildAccountsDOM();
-        updateFileSyncStatusUI();
-        alert('Vault successfully loaded and linked to file!');
-    } catch (e) {
-        alert('Failed to decrypt vault from file. Check master password.');
+    P2PSync.setPairingCode(newCode);
+    document.getElementById('p2pPairingCode').value = P2PSync.getPairingCode();
+    customInput.value = '';
+    
+    const container = document.getElementById('p2pQrContainer');
+    if (container) {
+        SVGQRCode.renderInto(container, P2PSync.getPairingCode(), 200);
     }
-}
-
-async function handleFileSyncDisconnect() {
-    await FileSync.disconnect();
-    updateFileSyncStatusUI();
-    alert('File sync disconnected.');
+    alert('Pairing code updated!');
 }
 
 async function handleAuthSubmit(e) {
@@ -335,7 +329,7 @@ async function handleAuthSubmit(e) {
     }
 }
 
-async function saveVault() {
+async function saveVault(isRemoteSync = false) {
     if (!masterKeyPassword) return;
     
     const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
@@ -357,11 +351,9 @@ async function saveVault() {
 
     logDebug(`Saved vault & auto backups to localStorage & IndexedDB. Total accounts: ${vaultData.length}`);
 
-    // Auto save to linked sync file (e.g. inside Google Drive / Dropbox / OneDrive folder)
-    if (window.FileSync && FileSync.hasFile()) {
-        FileSync.writeVaultToFile(serializedPayload).then(ok => {
-            if (ok) logDebug('Auto-saved vault to linked sync file.');
-        });
+    // Broadcast encrypted payload over WebRTC P2P to paired devices (if not triggered by incoming remote sync)
+    if (!isRemoteSync && window.P2PSync) {
+        P2PSync.broadcastVault(serializedPayload);
     }
 }
 
@@ -371,6 +363,27 @@ function showDashboard() {
     document.getElementById('headerActions').style.display = 'block';
     buildAccountsDOM();
     startTotpTimer();
+
+    // Initialize WebRTC Peer-to-Peer Sync engine
+    if (window.P2PSync) {
+        P2PSync.init();
+        P2PSync.onStatusChange(updateP2pStatusUI);
+        P2PSync.onVaultReceived(async (payload) => {
+            if (!masterKeyPassword) return;
+            try {
+                const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
+                const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
+                if (decryptedData && Array.isArray(decryptedData)) {
+                    vaultData = decryptedData;
+                    await saveVault(true); // Save locally without echoing back broadcast
+                    buildAccountsDOM();
+                    logDebug('Remote WebRTC P2P sync update applied!');
+                }
+            } catch (err) {
+                console.error('P2P sync payload decrypt error:', err);
+            }
+        });
+    }
 }
 
 function lockVault() {
