@@ -21,6 +21,7 @@
                 <h1>WebAuth Vault</h1>
             </div>
             <div class="header-actions" id="headerActions" style="display: none;">
+                <button id="p2pSyncModalBtn" class="btn btn-accent">P2P Sync</button>
                 <button id="folderSyncBtn" class="btn btn-accent">Sync Folder</button>
                 <button id="lockBtn" class="btn btn-secondary">Lock Vault</button>
             </div>
@@ -118,6 +119,55 @@
                 </div>
             </div>
         </div>
+        <!-- Modal: Peer-to-Peer WebRTC Sync Modal -->
+        <div id="p2pSyncModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content card">
+                <div class="modal-header">
+                    <h3>P2P Device Sync (Real-Time WebRTC)</h3>
+                    <button class="close-modal" id="closeP2pSyncModal">&times;</button>
+                </div>
+                <div class="p2p-sync-container">
+                    <div class="p2p-status-box">
+                        <span class="p2p-status-label">Status:</span>
+                        <span id="p2pSyncStatusText" class="p2p-status-badge badge-disconnected">Disconnected</span>
+                    </div>
+
+                    <p class="p2p-description">
+                        Connect two or more online devices (desktop or mobile) using the same pairing code. Devices sync automatically in real-time while connected.
+                    </p>
+
+                    <div style="margin-bottom: 15px;">
+                        <label class="p2p-label" for="p2pPairingCode">Current Pairing Code</label>
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <input type="text" id="p2pPairingCode" class="p2p-input" readonly style="font-family: monospace; font-weight: bold; letter-spacing: 1px;" placeholder="Generating code...">
+                            <button type="button" class="btn btn-secondary btn-sm" id="copyP2pCodeBtn">Copy</button>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 15px;">
+                        <label class="p2p-label" for="p2pCustomCodeInput">Set Custom Pairing Code</label>
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <input type="text" id="p2pCustomCodeInput" class="p2p-input" placeholder="Enter custom code" autocomplete="off" data-bwignore="true" data-lpignore="true">
+                            <button type="button" class="btn btn-primary btn-sm" id="setP2pCodeBtn">Apply</button>
+                        </div>
+                    </div>
+
+                    <div style="margin-bottom: 15px; text-align: center;">
+                        <div style="font-size: 0.85rem; color: var(--text-muted, #888); margin-bottom: 6px;">Pairing QR Code</div>
+                        <div id="p2pQrContainer" style="display: inline-block; padding: 8px; background: white; border-radius: 8px;"></div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 15px;">
+                        <button type="button" class="btn btn-primary" id="joinP2pSyncBtn" style="flex: 1;">Join P2P Sync</button>
+                        <button type="button" class="btn btn-danger" id="leaveP2pSyncBtn" style="flex: 1;">Leave P2P Sync</button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="closeP2pSyncBtn">Close</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Modal: Account Detail / More Info Card -->
         <div id="detailModal" class="modal-overlay" style="display: none;">
             <div class="modal-content card">
