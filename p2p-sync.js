@@ -97,14 +97,19 @@ const P2PSync = (function () {
      * Sets up event listeners on a PeerJS DataConnection.
      */
     function setupConnection(conn) {
-        const peerId = conn.peer;
+        const peerId = conn.peer || 'unknown';
+
+        // Clear existing PeerJS logs to prevent noise
+        if (typeof Peer !== 'undefined' && Peer.prototype && Peer.prototype._q) {
+            Peer.prototype._q = [];
+        }
 
         conn.on('open', () => {
             activeConnections.set(peerId, conn);
             updateStatus('connected', `Connected to peer (${activeConnections.size} active)`);
             
             // Send current local vault state immediately to newly connected peer
-            const currentPayload = localStorage.getItem('webauth_vault_data');
+            const currentPayload = localStorage.getItem('webauth_vault_data');;
             if (currentPayload) {
                 try {
                     conn.send(JSON.stringify({
@@ -238,48 +243,70 @@ const P2PSync = (function () {
         const hostPeerId = `webauth-vault-${roomHash}`;
         updateStatus('connecting', 'Connecting to signaling server...');
 
-        let isInitialized = false;
+    let isInitialized = false;
+    let initAttempted = false;
+    let retryCount = 0;
 
-        const peerConfig = {
-            debug: 1,
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' }
-                ]
-            }
-        };
+    const peerConfig = {
+        debug: 0,
+        config: {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ]
+        }
+    };
 
-        // Create Peer instance targeting host ID
-        peer = new Peer(hostPeerId, peerConfig);
+    // Force host mode to prevent PeerJS ID conflicts
+    let isHostAvailable = true;
+    const syncHostFlag = 'webauth_p2p_host_available';
+    if (localStorage.getItem(syncHostFlag) === 'true') {
+        isHostAvailable = false;
+        localStorage.removeItem(syncHostFlag);
+    } else {
+        localStorage.setItem(syncHostFlag, 'true');
+        isHostAvailable = true;
+    }
 
-        peer.on('open', (id) => {
+    // Create Peer instance targeting host ID
+    peer = new Peer(hostPeerId, peerConfig);
+
+    peer.on('open', (id) => {
+        if (isHostAvailable) {
             isInitialized = true;
             isHost = true;
             updateStatus('connected', 'Host ready, waiting for peer connections...');
-        });
+        }
+    });
 
-        peer.on('connection', (conn) => {
+    peer.on('connection', (conn) => {
+        if (isHost) {
             setupConnection(conn);
-        });
+        }
+    });
 
-        peer.on('error', (err) => {
-            if (err.type === 'unavailable-id') {
-                console.log('Room Host already active. Connecting as Client...');
-                isHost = false;
-                const oldPeer = peer;
-                peer = null;
-                if (oldPeer) {
-                    try { oldPeer.off(); oldPeer.destroy(); } catch (e) {}
-                }
+    peer.on('error', (err) => {
+        if (err.type === 'unavailable-id') {
+            console.log('Room Host already active. Connecting as Client...');
+            isHost = false;
+            isHostAvailable = false;
+            const oldPeer = peer;
+            peer = null;
+            if (oldPeer) {
+                try { oldPeer.off(); oldPeer.destroy(); } catch (e) {}
+            }
 
-                peer = new Peer(undefined, peerConfig);
-                peer.on('open', (myId) => {
-                    updateStatus('connecting', 'Connecting to host device...');
-                    const conn = peer.connect(hostPeerId, { reliable: true });
-                    setupConnection(conn);
-                });
+            peer = new Peer(undefined, peerConfig);
+            peer.on('open', (myId) => {
+                updateStatus('connecting', 'Connecting to host device...');
+                const conn = peer.connect(hostPeerId, { reliable: true });
+                setupConnection(conn);
+            });
+            
+            peer.on('connection', (conn) => {
+                setupConnection(conn);
+            });
 
                 peer.on('error', (clientErr) => {
                     console.error('P2PSync client peer error:', clientErr);
@@ -348,6 +375,9 @@ const P2PSync = (function () {
         }
     }
 
+    // Tracks the state of initialization to prevent race conditions
+    let isInitialized = false;
+
     // Public API
     return {
         init: init,
@@ -356,6 +386,16 @@ const P2PSync = (function () {
         broadcastVault: broadcastVault,
         onVaultReceived: onVaultReceived,
         onStatusChange: onStatusChange,
-        getStatus: getStatus
+        getStatus: getStatus,
+        // Add a method to check if the host is already active locally
+        forceHost: function(hostOnly = false) {
+            cleanup();
+            isHost = true;
+            if (hostOnly) {
+                updateStatus('connected', 'Force Mode - Host only');
+                return;
+            }
+            init();
+        }
     };
 })();

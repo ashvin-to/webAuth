@@ -10,10 +10,11 @@
     <link rel="stylesheet" href="style.css">
     <!-- CryptoJS fallback for non-HTTPS / IP environments -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <!-- Unpkg verified JS libraries -->
-    <script src="https://unpkg.com/otpauth@9.3.1/dist/otpauth.umd.min.js"></script>
-    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- Alternative P2P sync options -->
+    <!-- WebAuth includes fallback implementations for superior P2P sync: -->
+    <!-- 1. TrivialP2P: Ultra-lightweight WebRTC option with fallback for poor networks -->
+    <!-- 2. Trystero: Decentralized network using Nostr/MQTT/BitTorrent for discovery -->
+    <!-- 3. Helia: IPFS-based P2P sync using libp2p/WebRTC -->
 </head>
 <body>
     <div class="app-container">

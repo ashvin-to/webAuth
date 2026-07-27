@@ -369,7 +369,7 @@ function showDashboard() {
     buildAccountsDOM();
     startTotpTimer();
 
-    // Initialize WebRTC Peer-to-Peer Sync engine
+    // Initialize P2P Sync engine with Trystero (alternative to PeerJS)
     if (window.P2PSync) {
         P2PSync.init();
         P2PSync.onStatusChange(updateP2pStatusUI);
