@@ -1,7 +1,8 @@
 :root {
-    --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-    --card-bg: rgba(30, 41, 59, 0.75);
+    --bg-gradient: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #0f172a 50%, #090d16 100%);
+    --card-bg: rgba(30, 41, 59, 0.65);
     --card-border: rgba(255, 255, 255, 0.12);
+    --card-hover-border: rgba(99, 102, 241, 0.45);
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
     --accent-color: #6366f1;
@@ -11,6 +12,7 @@
     --danger-color: #ef4444;
     --success-color: #10b981;
     --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    --glass-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.5), 0 0 15px rgba(99, 102, 241, 0.1);
 }
 
 * {
@@ -22,17 +24,19 @@
 body {
     font-family: var(--font-family);
     background: var(--bg-gradient);
+    background-attachment: fixed;
     color: var(--text-primary);
     min-height: 100vh;
     display: flex;
     justify-content: center;
     align-items: flex-start;
     padding: 16px;
+    -webkit-font-smoothing: antialiased;
 }
 
 .app-container {
     width: 100%;
-    max-width: 900px;
+    max-width: 920px;
     margin: 0 auto;
 }
 
@@ -40,23 +44,34 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
-    padding: 8px 0;
+    margin-bottom: 24px;
+    padding: 12px 0;
+}
+
+.header-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
 .logo-area h1 {
-    font-size: 1.5rem;
+    font-size: 1.6rem;
     font-weight: 700;
     letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .card {
     background: var(--card-bg);
-    backdrop-filter: blur(20px);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
     border: 1px solid var(--card-border);
     border-radius: 16px;
     padding: 24px;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--glass-shadow);
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .auth-card {
