@@ -443,6 +443,125 @@ input[type="number"]:focus {
     text-align: center;
 }
 
+/* P2P Sync Modal Styles */
+.p2p-sync-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 8px 0;
+}
+
+.p2p-status-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+}
+
+.p2p-status-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.p2p-status-badge {
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+    text-transform: capitalize;
+}
+
+.p2p-status-badge.badge-disconnected {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.p2p-status-badge.badge-connecting {
+    background: rgba(234, 179, 8, 0.15);
+    color: #fde047;
+    border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.p2p-status-badge.badge-connected {
+    background: rgba(16, 185, 129, 0.15);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.p2p-description {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.p2p-pairing-section,
+.p2p-custom-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.p2p-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.p2p-input-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.p2p-input {
+    flex: 1;
+}
+
+.p2p-code-display {
+    font-family: monospace;
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: #38bdf8;
+}
+
+.p2p-qr-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.p2p-qr-label {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.p2p-qr-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: #ffffff;
+    padding: 12px;
+    border-radius: 12px;
+    min-width: 180px;
+    min-height: 180px;
+}
+
+.p2p-qr-container svg,
+.p2p-qr-container canvas {
+    max-width: 100%;
+    height: auto;
+    display: block;
+}
+
 /* ==========================================================================
    Mobile-Optimized Clean UI (Screens < 640px)
    ========================================================================== */
