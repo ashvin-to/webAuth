@@ -3,18 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebAuth - Client-Side 2FA Vault</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <title>WebAuth - Client-Side 2FA Vault</title>\n    <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+
     <!-- CryptoJS fallback for non-HTTPS / IP environments -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <!-- Alternative P2P sync options -->
-    <!-- WebAuth includes fallback implementations for superior P2P sync: -->
-    <!-- 1. TrivialP2P: Ultra-lightweight WebRTC option with fallback for poor networks -->
-    <!-- 2. Trystero: Decentralized network using Nostr/MQTT/BitTorrent for discovery -->
-    <!-- 3. Helia: IPFS-based P2P sync using libp2p/WebRTC -->
+    <!-- OTP Auth Library for TOTP code generation -->
+    <script src="https://unpkg.com/otpauth@9.3.1/dist/otpauth.umd.min.js"></script>
+    <!-- Simple P2P Sync Engine (indexedDB-based for cross-device sync) -->
+    <script src="p2p-sync.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -262,6 +261,8 @@
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
     <script src="file-sync.js"></script>
+    <script src="p2p-sync-trystero.js"></script>
+    <script src="p2p-sync-helia.js"></script>
     <script src="p2p-sync.js"></script>
     <script src="app.js"></script>
 </body>

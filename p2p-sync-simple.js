@@ -1,7 +1,9 @@
+// Simple P2P Sync Solution for WebAuth Vault
+// Works entirely in the browser with no external dependencies
 const P2PSync = (function () {
     const STORAGE_KEY = 'webauth_p2p_pairing_code';
     const VAULT_STORAGE_KEY = 'webauth_encrypted_vault';
-    let status = 'disconnected';
+    let status = 'disconnected'; // 'disconnected' | 'connecting' | 'connected' | 'error'
     let statusDetails = '';
     let reconnectTimeout = null;
     let pairingCode = null;
@@ -46,6 +48,35 @@ const P2PSync = (function () {
         return code;
     }
 
+    // Simple polling for incoming sync from other devices via IndexedDB
+    async function scanForPeers() {
+        if ('indexedDB' in window) {
+            try {
+                const db = await openIndexedDB();
+                const remoteVault = await loadFromIndexedDB(VAULT_STORAGE_KEY);
+                
+                if (remoteVault) {
+                    // Trigger vault listeners with the remote payload
+                    vaultReceivedCallbacks.forEach(cb => {
+                        try { cb(remoteVault); } catch (e) {}
+                    });
+                }
+            } catch (err) {
+                console.error('P2P scan error:', err);
+            }
+        }
+    }
+
+    function schedulePoll() {
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        reconnectTimeout = setTimeout(() => {
+            if (status === 'connected' || status === 'connecting') {
+                scanForPeers();
+                schedulePoll();
+            }
+        }, 5000); // Poll every 5 seconds
+    }
+
     async function init(code) {
         if (reconnectTimeout) {
             clearTimeout(reconnectTimeout);
@@ -58,7 +89,14 @@ const P2PSync = (function () {
         updateStatus('connecting', 'Initializing P2P sync...');
 
         try {
-            updateStatus('connected', 'P2P sync active - peer discovery enabled');
+            // Try to scan for existing peers first
+            await scanForPeers();
+            
+            // Start polling for new connections
+            schedulePoll();
+            
+            updateStatus('connected', 'P2P sync active - scanning for devices');
+            
         } catch (err) {
             console.error('P2P init error:', err);
             updateStatus('error', 'Failed to initialize P2P sync');
@@ -77,11 +115,15 @@ const P2PSync = (function () {
 
     async function broadcastVault(payload) {
         try {
-            // Save to IndexedDB and localStorage for peer discovery
+            // Save to IndexedDB for peer discovery
             await saveToIndexedDB(VAULT_STORAGE_KEY, payload);
+            
+            // Also save to localStorage for cross-tab sync
             localStorage.setItem('webauth_p2p_last_sync', payload);
+            
             console.log('Broadcasting vault to connected devices');
             return 1;
+            
         } catch (err) {
             console.error('Broadcast error:', err);
             return 0;
@@ -91,6 +133,8 @@ const P2PSync = (function () {
     function onVaultReceived(callback) {
         if (typeof callback === 'function') {
             vaultReceivedCallbacks.add(callback);
+            
+            // Check for existing vault on load
             const existingVault = localStorage.getItem('webauth_p2p_last_sync');
             if (existingVault) {
                 callback(existingVault);

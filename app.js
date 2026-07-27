@@ -369,7 +369,7 @@ function showDashboard() {
     buildAccountsDOM();
     startTotpTimer();
 
-    // Initialize P2P Sync engine with Trystero (alternative to PeerJS)
+    // Initialize P2P Sync engine (simple, cross-device sync)
     if (window.P2PSync) {
         P2PSync.init();
         P2PSync.onStatusChange(updateP2pStatusUI);
@@ -568,26 +568,32 @@ function updateTotpCodes() {
         const timerEl = document.getElementById(`timer-${acc.id}`);
         if (!codeEl || !timerEl) return;
 
-        try {
-            const totp = new OTPAuth.TOTP({
-                issuer: acc.issuer,
-                label: acc.account,
-                algorithm: acc.algorithm || "SHA1",
-                digits: acc.digits || 6,
-                period: acc.period || 30,
-                secret: OTPAuth.Secret.fromBase32(acc.secret.replace(/\s+/g, ''))
-            });
-            const tokenCode = totp.generate();
-            const period = acc.period || 30;
-            const remaining = period - (epoch % period);
-            
-            codeEl.textContent = `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
-            timerEl.textContent = `${remaining}s`;
-            codeEl.setAttribute('data-fullcode', tokenCode);
-        } catch (e) {
-            codeEl.textContent = 'INVALID';
-            timerEl.textContent = '--s';
-        }
+            try {
+                const cleanSecret = acc.secret.replace(/\s+/g, '');
+                if (!cleanSecret || cleanSecret.length < 16 || cleanSecret.length > 64) {
+                    throw new Error('Invalid secret length');
+                }
+                
+                const totp = new OTPAuth.TOTP({
+                    issuer: acc.issuer || 'Service',
+                    label: acc.account || 'Account',
+                    algorithm: acc.algorithm || "SHA1",
+                    digits: acc.digits || 6,
+                    period: acc.period || 30,
+                    secret: OTPAuth.Secret.fromBase32(cleanSecret)
+                });
+                const tokenCode = totp.generate();
+                const period = acc.period || 30;
+                const remaining = period - (epoch % period);
+                
+                codeEl.textContent = `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
+                timerEl.textContent = `${remaining}s`;
+                codeEl.setAttribute('data-fullcode', tokenCode);
+            } catch (e) {
+                codeEl.textContent = 'INVALID';
+                timerEl.textContent = '--s';
+                console.debug(`TOTP error for ${acc.issuer || 'Unknown'} (${acc.account || 'Unknown'}):`, e.message);
+            }
     });
 }
 
