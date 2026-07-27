@@ -143,6 +143,7 @@ function setupEventListeners() {
             navigator.clipboard.writeText(keyVal);
             alert('Emergency Recovery Key copied to clipboard!');
         });
+    }
     // Linked Folder Sync Modal
     const folderBtn = document.getElementById('folderSyncBtn');
     if (folderBtn) {
