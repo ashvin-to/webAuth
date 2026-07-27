@@ -1,84 +1,43 @@
 # WebAuth Vault 🔐
 
-A lightweight, zero-knowledge, client-side 2FA authenticator web application designed for seamless local use across laptops and mobile devices without hosting a server.
+A lightweight, fully client-side 2FA (TOTP) authenticator web application designed for zero-knowledge local security with flexible opt-in sync options across devices.
 
 ---
 
 ## 🌟 Key Features
 
-- **Zero-Knowledge Encryption**: Uses PBKDF2 (100,000 iterations) + AES-256-GCM client-side encryption. Your master password and 2FA secrets never leave your browser.
-- **Universal 2FA Compatibility**: Supports Google Authenticator, Microsoft Authenticator, Authy, Aegis, Bitwarden, 2FAS, GitHub, Amazon, Steam, and all standard TOTP services.
-- **Offline PWA Support**: Can be saved directly to your phone's Home Screen as a native app interface.
-- **Google Authenticator Import**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
-- **Device Sync (No Hosted Server Needed)**: Instantly transfer all 2FA accounts between laptop and phone via high-density single QR code scanning.
-- **Direct File Sync (Google Drive / Cloud)**: Seamlessly sync zero-knowledge encrypted vault data across devices by linking a file in your local Google Drive, Dropbox, or OneDrive folder with zero Client IDs or OAuth setup.
-- **Multi-Layer Data Protection**: Automatically backs up your encrypted vault across both `localStorage` and `IndexedDB`.
-- **Emergency Recovery Key System**: Generates a 16-character recovery key to prevent data loss if a password is forgotten.
-- **QR Code & Image Scanner**: Integrated live camera scanner + drag-and-drop QR screenshot parser.
-- **Clean Mobile UI**: Compact, touch-friendly dark mode interface tailored for phone browsers.
+- **Zero-Knowledge Architecture**: All encryption and decryption occur locally inside your browser using **AES-256-GCM** (WebCrypto API) and **PBKDF2 key derivation** with **100,000 iterations** of SHA-256. No unencrypted vault data or master passwords ever leave your machine.
+- **Universal TOTP Compatibility**: Supports Google Authenticator, Microsoft Authenticator, Authy, Aegis, Bitwarden, 2FAS, GitHub, Amazon, Steam, and all standard 2FA services.
+- **Google Authenticator Migration**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
+- **Multi-Layer Data Protection**: Vault data and emergency auto-backups are persisted locally across both `localStorage` and `IndexedDB`.
+- **Emergency Recovery Key System**: Automatically generates a 16-character recovery key to decrypt your vault if you forget your master password.
+- **Offline Local QR Encoder**: High-density QR generation (`qr-helper.js`) built completely in-house without external third-party image API calls.
+- **Integrated QR & Camera Scanner**: Built-in camera scanner and drag-and-drop QR image parser.
 
 ---
 
-## 🌐 Hosting Guide (Free & Private)
+## 🔄 Synchronization Options
 
-Since WebAuth is **100% client-side JavaScript**, your master password and decrypted keys remain inside your browser. Hosting it online only serves the static HTML/JS files, keeping your secrets 100% safe.
+WebAuth Vault provides three independent, opt-in synchronization mechanisms. None are required, and none replace another.
 
-### Method 1: GitHub Pages (Recommended)
-1. Push your `mauth-web` directory to a GitHub repository:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial WebAuth commit"
-   git remote add origin https://github.com/YOUR_USERNAME/mauth-web.git
-   git push -u origin main
-   ```
-2. Go to your repository on GitHub $\rightarrow$ **Settings** $\rightarrow$ **Pages**.
-3. Under **Build and deployment** $\rightarrow$ **Branch**, select `main` (root) and click **Save**.
-4. Access your vault on any phone or laptop at: `https://YOUR_USERNAME.github.io/mauth-web/`
+### 1. Manual Backup Export / Import (File-Based)
+- **What it does**: Allows you to export your encrypted vault as a JSON file or import a previously exported backup file.
+- **Requirements**: None. Works on all platforms, browsers, and offline environments.
+- **Trade-offs**: Fully manual process. You control transport and storage.
 
----
+### 2. Linked Folder Sync (Drive / Dropbox / Syncthing)
+- **What it does**: Links your vault directly to a `webauth_vault.json` file inside a folder managed by a desktop sync client (e.g., Google Drive for Desktop, Dropbox, OneDrive, or Syncthing). The app automatically performs a **pull-merge-on-unlock** when you open the vault and a **push-on-save** whenever accounts are modified.
+- **Requirements**: Requires the native **File System Access API** (supported in desktop Chrome, Edge, and Opera). Linux users typically pair this with Syncthing, rclone, or a mounted cloud path.
+- **Trade-offs**: Desktop-only. Sync is event-based (unlock and save), not background real-time polling.
 
-### Method 2: Vercel (One-Click Deploy)
-1. Install Vercel CLI or connect your GitHub account at [vercel.com](https://vercel.com).
-2. Run in terminal:
-   ```bash
-   npx vercel
-   ```
-3. Your app will be live at `https://mauth-web.vercel.app`.
-
----
-
-### Method 3: Cloudflare Pages / Netlify
-- **Netlify**: Drag and drop the `mauth-web` folder onto [app.netlify.com/drop](https://app.netlify.com/drop).
-- **Cloudflare Pages**: Connect your repository to Cloudflare Pages dashboard.
-
----
-
-### Method 4: Local Server (No Internet Needed)
-To run locally on your laptop without any internet connection:
-
-```bash
-cd /path/to/mauth-web
-python3 -m http.server 8080
-```
-Then open `http://localhost:8080` in your browser.
-
----
-
-## 📱 How to Install on Your Phone (PWA)
-
-1. Open your hosted URL (e.g. `https://YOUR_USERNAME.github.io/mauth-web/`) on your phone browser.
-2. **iOS (Safari)**: Tap the **Share** button $\rightarrow$ **Add to Home Screen**.
-3. **Android (Chrome)**: Tap the **3-dots menu** $\rightarrow$ **Add to Home screen** / **Install app**.
-4. WebAuth will launch like a native mobile app without browser address bars!
-
----
-
-## 🔄 Syncing Accounts Between Laptop & Phone
-
-1. On your **Laptop**, click **Sync Phone** in the header.
-2. On your **Phone**, tap **Scan QR** and point your camera at the laptop screen.
-3. All accounts will automatically import and update on your phone!
+### 3. Real-Time P2P Sync (Trystero WebRTC)
+- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels using a shared pairing room code. When connected, changes sync in real-time between devices, and newly joining peers automatically receive an initial symmetric sync.
+- **Requirements**: Both devices must be online simultaneously with P2P Sync joined.
+- **Signaling & Privacy Notice**:
+  - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/torrent` and uses public BitTorrent trackers for WebRTC signaling (connection establishment).
+  - Signaling trackers see connection metadata (IP addresses and room IDs) but **never see vault contents or secrets**.
+  - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.
+- **Security & Access Control**: The room pairing code acts as the sole access key to the WebRTC room. Treat it like a password (keep it long, random, and do not share publicly). Accounts received from a peer sharing your master password are merged automatically based on unique secret keys.
 
 ---
 
@@ -86,11 +45,32 @@ Then open `http://localhost:8080` in your browser.
 
 | Feature | Specification |
 | :--- | :--- |
-| **Encryption Algorithm** | AES-256-GCM |
-| **Key Derivation** | PBKDF2 with SHA-256 (100,000 rounds) |
-| **Storage Engine** | Dual Layer (`localStorage` + `IndexedDB`) |
-| **Protobuf Parser** | Zero-dependency binary stream parser |
-| **Password Managers** | Built-in `data-bwignore` flags to prevent Bitwarden conflicts |
+| **Encryption Algorithm** | AES-256-GCM (256-bit key) |
+| **Key Derivation** | PBKDF2 with SHA-256 (100,000 iterations) |
+| **Local Storage** | Dual Layer (`localStorage` + `IndexedDB`) |
+| **QR Code Generation** | Local zero-dependency SVG QR matrix encoder |
+| **Protobuf Parser** | Zero-dependency binary stream parser for Google Auth migration |
+
+---
+
+## 🌐 Hosting & Local Development
+
+WebAuth Vault is built using static HTML5, CSS3, and vanilla JavaScript without any build steps or bundlers.
+
+> [!IMPORTANT]
+> Because WebCrypto, File System Access API, and ES module imports require a secure context or HTTP(S) origin, you must serve the application over HTTP/HTTPS (e.g., `http://localhost`) rather than opening `file://` directly in your browser.
+
+### Local Development Server
+
+```bash
+cd mauth-web
+python3 -m http.server 8080
+```
+Then visit `http://localhost:8080` in your browser.
+
+### Free Hosting Options
+- **GitHub Pages**: Push to a GitHub repository and enable Pages under Repository Settings $\rightarrow$ Pages.
+- **Vercel / Netlify**: Deploy as a static site repository.
 
 ---
 
