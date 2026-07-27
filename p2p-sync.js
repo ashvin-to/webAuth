@@ -240,8 +240,19 @@ const P2PSync = (function () {
 
         let isInitialized = false;
 
+        const peerConfig = {
+            debug: 1,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+            }
+        };
+
         // Create Peer instance targeting host ID
-        peer = new Peer(hostPeerId, { debug: 1 });
+        peer = new Peer(hostPeerId, peerConfig);
 
         peer.on('open', (id) => {
             isInitialized = true;
@@ -265,7 +276,7 @@ const P2PSync = (function () {
                     }
                 } catch (e) {}
 
-                peer = new Peer(undefined, { debug: 1 });
+                peer = new Peer(undefined, peerConfig);
                 peer.on('open', (myId) => {
                     updateStatus('connecting', 'Connecting to host device...');
                     const conn = peer.connect(hostPeerId, { reliable: true });
