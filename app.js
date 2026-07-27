@@ -158,6 +158,22 @@ function setupEventListeners() {
     const closeFolder2 = document.getElementById('closeFolderSyncBtn');
     if (closeFolder2) closeFolder2.addEventListener('click', () => toggleModal('folderSyncModal', false));
 
+    const p2pBtn = document.getElementById('p2pSyncModalBtn');
+    if (p2pBtn) p2pBtn.addEventListener('click', openP2pSyncModal);
+    const closeP2p1 = document.getElementById('closeP2pSyncModal');
+    if (closeP2p1) closeP2p1.addEventListener('click', () => toggleModal('p2pSyncModal', false));
+    const closeP2p2 = document.getElementById('closeP2pSyncBtn');
+    if (closeP2p2) closeP2p2.addEventListener('click', () => toggleModal('p2pSyncModal', false));
+
+    const copyP2pBtn = document.getElementById('copyP2pCodeBtn');
+    if (copyP2pBtn) copyP2pBtn.addEventListener('click', copyP2pCode);
+    const setP2pBtn = document.getElementById('setP2pCodeBtn');
+    if (setP2pBtn) setP2pBtn.addEventListener('click', setP2pCustomCode);
+    const joinP2pBtn = document.getElementById('joinP2pSyncBtn');
+    if (joinP2pBtn) joinP2pBtn.addEventListener('click', handleJoinP2pSync);
+    const leaveP2pBtn = document.getElementById('leaveP2pSyncBtn');
+    if (leaveP2pBtn) leaveP2pBtn.addEventListener('click', handleLeaveP2pSync);
+
     const createFolderBtn = document.getElementById('createFolderSyncBtn');
     if (createFolderBtn) createFolderBtn.addEventListener('click', handleCreateFolderSync);
     const openFolderBtn = document.getElementById('openFolderSyncBtn');
@@ -309,6 +325,130 @@ async function syncWithLinkedFile() {
     }
 }
 
+function updateP2pStatusUI() {
+    const statusEl = document.getElementById('p2pSyncStatusText');
+    if (!statusEl) return;
+
+    if (!window.TrysteroSync || !TrysteroSync.isConnected()) {
+        statusEl.textContent = 'Disconnected';
+        statusEl.className = 'p2p-status-badge badge-disconnected';
+        return;
+    }
+
+    const peerCount = TrysteroSync.getPeerCount();
+    if (peerCount > 0) {
+        statusEl.textContent = `Connected (${peerCount} device(s) online)`;
+        statusEl.className = 'p2p-status-badge badge-connected';
+    } else {
+        statusEl.textContent = 'Waiting for peer...';
+        statusEl.className = 'p2p-status-badge badge-connecting';
+    }
+}
+
+function openP2pSyncModal() {
+    toggleModal('p2pSyncModal', true);
+    if (window.TrysteroSync) {
+        const roomId = TrysteroSync.getRoomId();
+        const codeInput = document.getElementById('p2pPairingCode');
+        if (codeInput) codeInput.value = roomId;
+
+        const container = document.getElementById('p2pQrContainer');
+        if (container) {
+            SVGQRCode.renderInto(container, roomId, 180);
+        }
+    }
+    updateP2pStatusUI();
+}
+
+function copyP2pCode() {
+    const codeInput = document.getElementById('p2pPairingCode');
+    if (codeInput && codeInput.value) {
+        navigator.clipboard.writeText(codeInput.value);
+        alert('P2P Pairing code copied to clipboard!');
+    }
+}
+
+function setP2pCustomCode() {
+    if (!window.TrysteroSync) return;
+    const customInput = document.getElementById('p2pCustomCodeInput');
+    const newCode = customInput ? customInput.value.trim() : '';
+    if (!newCode) {
+        alert('Please enter a valid pairing code.');
+        return;
+    }
+    TrysteroSync.setRoomId(newCode);
+    document.getElementById('p2pPairingCode').value = TrysteroSync.getRoomId();
+    customInput.value = '';
+
+    const container = document.getElementById('p2pQrContainer');
+    if (container) {
+        SVGQRCode.renderInto(container, TrysteroSync.getRoomId(), 180);
+    }
+    updateP2pStatusUI();
+    alert('Pairing code updated!');
+}
+
+async function handleJoinP2pSync() {
+    if (!window.TrysteroSync) {
+        alert('P2P Sync module is unavailable.');
+        return;
+    }
+    setupTrysteroListeners();
+    const joined = await TrysteroSync.join();
+    updateP2pStatusUI();
+    if (joined) {
+        if (vaultData.length > 0 && masterKeyPassword) {
+            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+            TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+        }
+    }
+}
+
+function handleLeaveP2pSync() {
+    if (!window.TrysteroSync) return;
+    TrysteroSync.leave();
+    updateP2pStatusUI();
+}
+
+let trysteroListenersWired = false;
+function setupTrysteroListeners() {
+    if (!window.TrysteroSync || trysteroListenersWired) return;
+    trysteroListenersWired = true;
+
+    TrysteroSync.onPeerChange(() => {
+        updateP2pStatusUI();
+    });
+
+    TrysteroSync.onReceive(async (payload) => {
+        if (!masterKeyPassword) return;
+        try {
+            const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
+            if (decryptedData && Array.isArray(decryptedData)) {
+                const existingSecrets = new Set(vaultData.map(a => a.secret));
+                let mergedCount = 0;
+                for (let remoteAcc of decryptedData) {
+                    if (!existingSecrets.has(remoteAcc.secret)) {
+                        vaultData.push(remoteAcc);
+                        existingSecrets.add(remoteAcc.secret);
+                        mergedCount++;
+                    }
+                }
+                if (mergedCount > 0) {
+                    buildAccountsDOM();
+                    const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+                    const serializedPayload = JSON.stringify(encryptedPayload);
+                    localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
+                    await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
+                    logDebug(`Remote Trystero P2P sync applied: merged ${mergedCount} new account(s).`);
+                }
+            }
+        } catch (err) {
+            console.warn('Trystero P2P payload decrypt ignored (mismatched master password or invalid data)');
+        }
+    });
+}
+
 
 
 async function handleAuthSubmit(e) {
@@ -411,6 +551,10 @@ async function saveVault() {
     if (window.FileSync && FileSync.hasFile()) {
         await syncWithLinkedFile();
     }
+
+    if (window.TrysteroSync && TrysteroSync.isConnected()) {
+        TrysteroSync.broadcast(serializedPayload);
+    }
 }
 
 async function showDashboard() {
@@ -430,6 +574,11 @@ async function showDashboard() {
                 await syncWithLinkedFile();
             }
         }
+    }
+
+    if (window.TrysteroSync && TrysteroSync.isActive()) {
+        setupTrysteroListeners();
+        await TrysteroSync.join();
     }
 }
 
