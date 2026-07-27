@@ -87,13 +87,33 @@ function isPeerApproved(deviceId) {
     return getTrustedPeers().has(deviceId);
 }
 
-async function deriveRoomId(masterPassword) {
-    if (!masterPassword) return null;
+const STORAGE_KEY_CUSTOM_PASS = 'webauth_trystero_custom_pass';
+
+function getWeekNumber(daysOffset = 0) {
+    const timestamp = Date.now() + (daysOffset * 86400 * 1000);
+    return Math.floor(timestamp / (7 * 24 * 60 * 60 * 1000));
+}
+
+async function deriveRoomId(passphrase, daysOffset = 0) {
+    if (!passphrase) return null;
+    const weekNum = getWeekNumber(daysOffset);
     const enc = new TextEncoder();
-    const data = enc.encode(masterPassword + ROOM_ID_SALT);
+    const data = enc.encode(passphrase + ROOM_ID_SALT + '-week-' + weekNum);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getCustomPassphrase() {
+    return localStorage.getItem(STORAGE_KEY_CUSTOM_PASS) || '';
+}
+
+function setCustomPassphrase(pass) {
+    if (pass && pass.trim()) {
+        localStorage.setItem(STORAGE_KEY_CUSTOM_PASS, pass.trim());
+    } else {
+        localStorage.removeItem(STORAGE_KEY_CUSTOM_PASS);
+    }
 }
 
 function isActive() {
@@ -110,10 +130,16 @@ function notifyPeerChange(peerId, action) {
     });
 }
 
-async function join(masterPassword) {
-    if (!masterPassword) return false;
-    const roomId = await deriveRoomId(masterPassword);
-    if (!roomId) return false;
+let secondaryRoomInstance = null;
+
+async function join(passphraseOverride) {
+    const effectivePass = passphraseOverride || getCustomPassphrase();
+    if (!effectivePass) return false;
+    
+    const roomIdCurrent = await deriveRoomId(effectivePass, 0);
+    const roomIdPrev = await deriveRoomId(effectivePass, -7);
+    if (!roomIdCurrent) return false;
+
     if (isJoined && roomInstance) {
         return true;
     }
@@ -126,13 +152,14 @@ async function join(masterPassword) {
             config: { iceServers: ICE_SERVERS },
             iceServers: ICE_SERVERS
         };
-        roomInstance = joinRoom(rtcOpts, roomId);
+
+        roomInstance = joinRoom(rtcOpts, roomIdCurrent);
         
         const [sendVault, getVault] = roomInstance.makeAction('vault');
         sendVaultAction = sendVault;
         getVaultAction = getVault;
 
-        getVaultAction((rawMessage, peerId) => {
+        const handleIncomingVaultMessage = (rawMessage, peerId) => {
             let deviceId = peerId;
             let payload = rawMessage;
             try {
@@ -146,7 +173,9 @@ async function join(masterPassword) {
             receiveCallbacks.forEach(cb => {
                 try { cb(payload, peerId, deviceId); } catch (e) {}
             });
-        });
+        };
+
+        getVaultAction(handleIncomingVaultMessage);
 
         const peersMap = new Set();
 
@@ -161,6 +190,15 @@ async function join(masterPassword) {
             peerCount = peersMap.size;
             notifyPeerChange(peerId, 'leave');
         });
+
+        // Overlap secondary room for previous week
+        try {
+            secondaryRoomInstance = joinRoom(rtcOpts, roomIdPrev);
+            const [, getVaultSecondary] = secondaryRoomInstance.makeAction('vault');
+            getVaultSecondary(handleIncomingVaultMessage);
+        } catch (secErr) {
+            console.warn('Secondary room join warning:', secErr);
+        }
 
         isJoined = true;
         setActive(true);
@@ -192,6 +230,10 @@ function leave() {
     if (roomInstance) {
         try { roomInstance.leave(); } catch (e) {}
         roomInstance = null;
+    }
+    if (secondaryRoomInstance) {
+        try { secondaryRoomInstance.leave(); } catch (e) {}
+        secondaryRoomInstance = null;
     }
     sendVaultAction = null;
     getVaultAction = null;
@@ -245,6 +287,8 @@ window.TrysteroSync = {
     getTrustedPeers,
     approvePeer,
     isPeerApproved,
+    getCustomPassphrase,
+    setCustomPassphrase,
     isActive,
     setActive,
     isConnected: () => isJoined

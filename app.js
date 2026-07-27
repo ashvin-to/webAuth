@@ -416,6 +416,12 @@ async function handleChangePasswordSubmit(e) {
 
 function openP2pSyncModal() {
     toggleModal('p2pSyncModal', true);
+    if (window.TrysteroSync) {
+        const passInput = document.getElementById('p2pCustomPassphraseInput');
+        if (passInput) {
+            passInput.value = TrysteroSync.getCustomPassphrase();
+        }
+    }
     updateP2pStatusUI();
 }
 
@@ -426,7 +432,8 @@ async function handleJoinP2pSync() {
     }
     if (!masterKeyPassword) return;
     setupTrysteroListeners();
-    const joined = await TrysteroSync.join(masterKeyPassword);
+    const customPass = TrysteroSync.getCustomPassphrase();
+    const joined = await TrysteroSync.join(customPass || masterKeyPassword);
     updateP2pStatusUI();
     if (joined) {
         if (vaultData.length > 0 && masterKeyPassword) {
@@ -499,12 +506,22 @@ function setupTrysteroListeners() {
         pendingPeerDeviceId = null;
     });
 
-    const ignoreBtn = document.getElementById('ignoreP2pPeerBtn');
-    if (ignoreBtn) ignoreBtn.addEventListener('click', () => {
-        pendingPeerDeviceId = null;
-        pendingPeerPayload = null;
-        const promptBox = document.getElementById('p2pPendingApprovals');
-        if (promptBox) promptBox.style.display = 'none';
+    const savePassBtn = document.getElementById('saveP2pCustomPassBtn');
+    if (savePassBtn) savePassBtn.addEventListener('click', async () => {
+        if (!window.TrysteroSync) return;
+        const passInput = document.getElementById('p2pCustomPassphraseInput');
+        const passVal = passInput ? passInput.value.trim() : '';
+        TrysteroSync.setCustomPassphrase(passVal);
+        if (TrysteroSync.isActive()) {
+            TrysteroSync.leave();
+            const joined = await TrysteroSync.join(passVal || masterKeyPassword);
+            updateP2pStatusUI();
+            if (joined && vaultData.length > 0 && masterKeyPassword) {
+                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+            }
+        }
+        alert(passVal ? 'Custom P2P sync passphrase saved!' : 'Custom P2P sync passphrase cleared (reverted to master password).');
     });
 
     TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {

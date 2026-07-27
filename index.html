@@ -147,6 +147,12 @@
                             <button type="button" class="btn btn-primary btn-sm" id="approveP2pPeerBtn">Approve</button>
                             <button type="button" class="btn btn-secondary btn-sm" id="ignoreP2pPeerBtn">Ignore</button>
                         </div>
+                    <div style="margin-top: 12px;">
+                        <label class="p2p-label" for="p2pCustomPassphraseInput">Sync Passphrase (optional — leave blank to use master password)</label>
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <input type="password" id="p2pCustomPassphraseInput" class="p2p-input" placeholder="Enter custom sync passphrase" autocomplete="off" data-bwignore="true" data-lpignore="true">
+                            <button type="button" class="btn btn-secondary btn-sm" id="saveP2pCustomPassBtn">Save Passphrase</button>
+                        </div>
                     </div>
 
                     <div style="display: flex; gap: 10px; margin-top: 15px;">
