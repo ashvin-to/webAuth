@@ -441,11 +441,71 @@ function handleLeaveP2pSync() {
     TrysteroSync.leave();
     updateP2pStatusUI();
 }
+let pendingPeerDeviceId = null;
+let pendingPeerPayload = null;
+
+function promptPeerApproval(deviceId, payload) {
+    pendingPeerDeviceId = deviceId;
+    pendingPeerPayload = payload;
+    const promptBox = document.getElementById('p2pPendingApprovals');
+    const fingerprintEl = document.getElementById('p2pPendingFingerprint');
+    if (promptBox && fingerprintEl) {
+        fingerprintEl.textContent = deviceId ? deviceId.slice(0, 8) : 'Unknown';
+        promptBox.style.display = 'block';
+    }
+}
+
+async function processIncomingP2pPayload(payload) {
+    if (!masterKeyPassword) return;
+    try {
+        const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
+        const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
+        if (decryptedData && Array.isArray(decryptedData)) {
+            const existingSecrets = new Set(vaultData.map(a => a.secret));
+            let mergedCount = 0;
+            for (let remoteAcc of decryptedData) {
+                if (!existingSecrets.has(remoteAcc.secret)) {
+                    vaultData.push(remoteAcc);
+                    existingSecrets.add(remoteAcc.secret);
+                    mergedCount++;
+                }
+            }
+            if (mergedCount > 0) {
+                buildAccountsDOM();
+                await saveVault();
+                logDebug(`Remote Trystero P2P sync applied & bridged: merged ${mergedCount} new account(s).`);
+            }
+        }
+    } catch (err) {
+        console.warn('Trystero decryption / merge error:', err);
+    }
+}
 
 let trysteroListenersWired = false;
 function setupTrysteroListeners() {
     if (!window.TrysteroSync || trysteroListenersWired) return;
     trysteroListenersWired = true;
+
+    const approveBtn = document.getElementById('approveP2pPeerBtn');
+    if (approveBtn) approveBtn.addEventListener('click', () => {
+        if (!pendingPeerDeviceId || !window.TrysteroSync) return;
+        TrysteroSync.approvePeer(pendingPeerDeviceId);
+        const promptBox = document.getElementById('p2pPendingApprovals');
+        if (promptBox) promptBox.style.display = 'none';
+        if (pendingPeerPayload) {
+            processIncomingP2pPayload(pendingPeerPayload);
+            pendingPeerPayload = null;
+        }
+        pendingPeerDeviceId = null;
+    });
+
+    const ignoreBtn = document.getElementById('ignoreP2pPeerBtn');
+    if (ignoreBtn) ignoreBtn.addEventListener('click', () => {
+        pendingPeerDeviceId = null;
+        pendingPeerPayload = null;
+        const promptBox = document.getElementById('p2pPendingApprovals');
+        if (promptBox) promptBox.style.display = 'none';
+    });
 
     TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {
         updateP2pStatusUI();
@@ -460,33 +520,14 @@ function setupTrysteroListeners() {
         }
     });
 
-    TrysteroSync.onReceive(async (payload) => {
+    TrysteroSync.onReceive(async (payload, peerId, deviceId) => {
         if (!masterKeyPassword) return;
-        try {
-            const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
-            const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
-            if (decryptedData && Array.isArray(decryptedData)) {
-                const existingSecrets = new Set(vaultData.map(a => a.secret));
-                let mergedCount = 0;
-                for (let remoteAcc of decryptedData) {
-                    if (!existingSecrets.has(remoteAcc.secret)) {
-                        vaultData.push(remoteAcc);
-                        existingSecrets.add(remoteAcc.secret);
-                        mergedCount++;
-                    }
-                }
-                if (mergedCount > 0) {
-                    buildAccountsDOM();
-                    const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-                    const serializedPayload = JSON.stringify(encryptedPayload);
-                    localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
-                    await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
-                    logDebug(`Remote Trystero P2P sync applied: merged ${mergedCount} new account(s).`);
-                }
-            }
-        } catch (err) {
-            console.warn('Trystero P2P payload decrypt ignored (mismatched master password or invalid data)');
+        const effectiveId = deviceId || peerId;
+        if (window.TrysteroSync && !TrysteroSync.isPeerApproved(effectiveId)) {
+            promptPeerApproval(effectiveId, payload);
+            return;
         }
+        await processIncomingP2pPayload(payload);
     });
 }
 

@@ -138,6 +138,17 @@
                         Devices unlocked with the same master password automatically find each other in real-time — no code needed.
                     </p>
 
+                    <div id="p2pPendingApprovals" style="display: none; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); padding: 12px; border-radius: 8px; margin-top: 12px;">
+                        <div style="font-size: 0.85rem; font-weight: 600; color: #fde047; margin-bottom: 6px;">New Device Sync Request</div>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 10px;">
+                            Unrecognized device <code id="p2pPendingFingerprint" style="color: #38bdf8; font-weight: bold;">-</code> wants to sync accounts.
+                        </p>
+                        <div style="display: flex; gap: 8px;">
+                            <button type="button" class="btn btn-primary btn-sm" id="approveP2pPeerBtn">Approve</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="ignoreP2pPeerBtn">Ignore</button>
+                        </div>
+                    </div>
+
                     <div style="display: flex; gap: 10px; margin-top: 15px;">
                         <button type="button" class="btn btn-primary" id="joinP2pSyncBtn" style="flex: 1;">Enable P2P Auto-Sync</button>
                         <button type="button" class="btn btn-danger" id="leaveP2pSyncBtn" style="flex: 1;">Disable P2P Auto-Sync</button>

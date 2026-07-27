@@ -54,6 +54,39 @@ if (typeof window !== 'undefined') {
 
 const ROOM_ID_SALT = 'webauth-vault-trystero-room-v1';
 
+function getDeviceId() {
+    let id = localStorage.getItem('webauth_device_id');
+    if (!id || typeof id !== 'string' || id.length < 8) {
+        const randomBuffer = new Uint8Array(8);
+        crypto.getRandomValues(randomBuffer);
+        id = Array.from(randomBuffer).map(b => b.toString(16).padStart(2, '0')).join('');
+        localStorage.setItem('webauth_device_id', id);
+    }
+    return id;
+}
+
+function getTrustedPeers() {
+    try {
+        const saved = localStorage.getItem('webauth_trusted_peers');
+        return new Set(saved ? JSON.parse(saved) : []);
+    } catch (e) {
+        return new Set();
+    }
+}
+
+function approvePeer(deviceId) {
+    if (!deviceId) return;
+    const peers = getTrustedPeers();
+    peers.add(deviceId);
+    localStorage.setItem('webauth_trusted_peers', JSON.stringify(Array.from(peers)));
+}
+
+function isPeerApproved(deviceId) {
+    if (!deviceId) return false;
+    if (deviceId === getDeviceId()) return true;
+    return getTrustedPeers().has(deviceId);
+}
+
 async function deriveRoomId(masterPassword) {
     if (!masterPassword) return null;
     const enc = new TextEncoder();
@@ -99,9 +132,19 @@ async function join(masterPassword) {
         sendVaultAction = sendVault;
         getVaultAction = getVault;
 
-        getVaultAction((payload, peerId) => {
+        getVaultAction((rawMessage, peerId) => {
+            let deviceId = peerId;
+            let payload = rawMessage;
+            try {
+                const parsed = typeof rawMessage === 'string' ? JSON.parse(rawMessage) : rawMessage;
+                if (parsed && parsed.deviceId && parsed.payload) {
+                    deviceId = parsed.deviceId;
+                    payload = parsed.payload;
+                }
+            } catch (e) {}
+
             receiveCallbacks.forEach(cb => {
-                try { cb(payload, peerId); } catch (e) {}
+                try { cb(payload, peerId, deviceId); } catch (e) {}
             });
         });
 
@@ -133,7 +176,11 @@ async function join(masterPassword) {
 function broadcast(serializedPayload) {
     if (!isJoined || !sendVaultAction) return false;
     try {
-        sendVaultAction(serializedPayload);
+        const msgObj = {
+            deviceId: getDeviceId(),
+            payload: serializedPayload
+        };
+        sendVaultAction(JSON.stringify(msgObj));
         return true;
     } catch (err) {
         console.error('Trystero broadcast error:', err);
@@ -194,6 +241,10 @@ window.TrysteroSync = {
     getLastError,
     getPeerCount,
     deriveRoomId,
+    getDeviceId,
+    getTrustedPeers,
+    approvePeer,
+    isPeerApproved,
     isActive,
     setActive,
     isConnected: () => isJoined
