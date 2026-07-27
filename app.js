@@ -143,11 +143,28 @@ function setupEventListeners() {
             navigator.clipboard.writeText(keyVal);
             alert('Emergency Recovery Key copied to clipboard!');
         });
+    // Linked Folder Sync Modal
+    const folderBtn = document.getElementById('folderSyncBtn');
+    if (folderBtn) {
+        if (!('showSaveFilePicker' in window)) {
+            folderBtn.style.display = 'none';
+        } else {
+            folderBtn.addEventListener('click', openFolderSyncModal);
+        }
     }
+    const closeFolder1 = document.getElementById('closeFolderSyncModal');
+    if (closeFolder1) closeFolder1.addEventListener('click', () => toggleModal('folderSyncModal', false));
+    const closeFolder2 = document.getElementById('closeFolderSyncBtn');
+    if (closeFolder2) closeFolder2.addEventListener('click', () => toggleModal('folderSyncModal', false));
 
-
-
-    // Add Account & Modals
+    const createFolderBtn = document.getElementById('createFolderSyncBtn');
+    if (createFolderBtn) createFolderBtn.addEventListener('click', handleCreateFolderSync);
+    const openFolderBtn = document.getElementById('openFolderSyncBtn');
+    if (openFolderBtn) openFolderBtn.addEventListener('click', handleOpenFolderSync);
+    const syncNowBtn = document.getElementById('syncNowFolderBtn');
+    if (syncNowBtn) syncNowBtn.addEventListener('click', handleSyncNowFolder);
+    const unlinkBtn = document.getElementById('unlinkFolderBtn');
+    if (unlinkBtn) unlinkBtn.addEventListener('click', handleUnlinkFolder);
     document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
     document.getElementById('emptyAddBtn').addEventListener('click', () => openAddModal('manual'));
     document.getElementById('closeAddModal').addEventListener('click', () => toggleModal('addModal', false));
@@ -190,9 +207,105 @@ function setupEventListeners() {
     // Import Backup JSON File
     const importFileInput = document.getElementById('importJsonFileInput');
     document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
-    importFileInput.addEventListener('change', handleImportVaultFile);
+}
 
+function updateFolderSyncUI() {
+    const statusEl = document.getElementById('folderSyncStatusText');
+    if (!statusEl) return;
+    const fileName = window.FileSync ? FileSync.getFileName() : null;
+    if (fileName) {
+        statusEl.textContent = `Linked: ${fileName}`;
+        statusEl.className = 'p2p-status-badge badge-connected';
+    } else {
+        statusEl.textContent = 'No file linked';
+        statusEl.className = 'p2p-status-badge badge-disconnected';
+    }
+}
 
+function openFolderSyncModal() {
+    toggleModal('folderSyncModal', true);
+    updateFolderSyncUI();
+}
+
+async function handleCreateFolderSync() {
+    if (!window.FileSync) return;
+    const success = await FileSync.selectSaveFile();
+    updateFolderSyncUI();
+    if (success) {
+        await syncWithLinkedFile();
+    }
+}
+
+async function handleOpenFolderSync() {
+    if (!window.FileSync) return;
+    const fileData = await FileSync.selectOpenFile();
+    updateFolderSyncUI();
+    if (fileData !== null || FileSync.hasFile()) {
+        await syncWithLinkedFile();
+    }
+}
+
+async function handleSyncNowFolder() {
+    if (!window.FileSync || !FileSync.hasFile()) {
+        alert('No linked file to sync. Create or open a linked file first.');
+        return;
+    }
+    await syncWithLinkedFile();
+    updateFolderSyncUI();
+}
+
+async function handleUnlinkFolder() {
+    if (!window.FileSync) return;
+    await FileSync.disconnect();
+    updateFolderSyncUI();
+}
+
+async function syncWithLinkedFile() {
+    if (!window.FileSync || !FileSync.hasFile() || !masterKeyPassword) return;
+
+    try {
+        const fileContents = await FileSync.readVaultFromFile();
+        if (fileContents && fileContents.trim()) {
+            try {
+                const parsedPayload = JSON.parse(fileContents);
+                const decryptedData = await CryptoVault.decrypt(parsedPayload, masterKeyPassword);
+                if (decryptedData && Array.isArray(decryptedData)) {
+                    const existingSecrets = new Set(vaultData.map(a => a.secret));
+                    let mergedCount = 0;
+                    for (let remoteAcc of decryptedData) {
+                        if (!existingSecrets.has(remoteAcc.secret)) {
+                            vaultData.push(remoteAcc);
+                            existingSecrets.add(remoteAcc.secret);
+                            mergedCount++;
+                        }
+                    }
+                    if (mergedCount > 0) {
+                        buildAccountsDOM();
+                        logDebug(`Linked file sync applied: merged ${mergedCount} new account(s).`);
+                    }
+                }
+            } catch (err) {
+                console.warn('Linked file decrypt error:', err);
+                alert('Linked file could not be decrypted with your current master password — skipping merge.');
+            }
+        }
+
+        // Push current local vault data to linked file
+        const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+        const serialized = JSON.stringify(encryptedPayload);
+        const writeOk = await FileSync.writeVaultToFile(serialized);
+        if (!writeOk && FileSync.hasFile()) {
+            const statusEl = document.getElementById('folderSyncStatusText');
+            if (statusEl) {
+                statusEl.textContent = `Permission denied: ${FileSync.getFileName()}`;
+                statusEl.className = 'p2p-status-badge badge-disconnected';
+            }
+        } else {
+            updateFolderSyncUI();
+        }
+    } catch (err) {
+        console.error('Error during linked file sync:', err);
+    }
 }
 
 
@@ -293,14 +406,30 @@ async function saveVault() {
     }
 
     logDebug(`Saved vault & auto backups to localStorage & IndexedDB. Total accounts: ${vaultData.length}`);
+
+    if (window.FileSync && FileSync.hasFile()) {
+        await syncWithLinkedFile();
+    }
 }
 
-function showDashboard() {
+async function showDashboard() {
     document.getElementById('authSection').style.display = 'none';
     document.getElementById('dashboardSection').style.display = 'block';
     document.getElementById('headerActions').style.display = 'block';
     buildAccountsDOM();
     startTotpTimer();
+
+    if (window.FileSync) {
+        if (!('showSaveFilePicker' in window)) {
+            const folderBtn = document.getElementById('folderSyncBtn');
+            if (folderBtn) folderBtn.style.display = 'none';
+        } else {
+            const restored = await FileSync.init();
+            if (restored) {
+                await syncWithLinkedFile();
+            }
+        }
+    }
 }
 
 function lockVault() {
