@@ -54,9 +54,9 @@ function setActive(active) {
     localStorage.setItem(STORAGE_KEY_ACTIVE, active ? 'true' : 'false');
 }
 
-function notifyPeerChange() {
+function notifyPeerChange(peerId, action) {
     peerChangeCallbacks.forEach(cb => {
-        try { cb(peerCount); } catch (e) {}
+        try { cb(peerCount, peerId, action); } catch (e) {}
     });
 }
 
@@ -85,13 +85,13 @@ async function join(roomIdOverride) {
         roomInstance.onPeerJoin(peerId => {
             peersMap.add(peerId);
             peerCount = peersMap.size;
-            notifyPeerChange();
+            notifyPeerChange(peerId, 'join');
         });
 
         roomInstance.onPeerLeave(peerId => {
             peersMap.delete(peerId);
             peerCount = peersMap.size;
-            notifyPeerChange();
+            notifyPeerChange(peerId, 'leave');
         });
 
         isJoined = true;

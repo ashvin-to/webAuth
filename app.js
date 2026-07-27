@@ -415,8 +415,17 @@ function setupTrysteroListeners() {
     if (!window.TrysteroSync || trysteroListenersWired) return;
     trysteroListenersWired = true;
 
-    TrysteroSync.onPeerChange(() => {
+    TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {
         updateP2pStatusUI();
+        if (action === 'join' && masterKeyPassword && vaultData.length > 0) {
+            try {
+                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+                logDebug(`Symmetric P2P broadcast sent to newly joined peer (${peerId || 'peer'})`);
+            } catch (err) {
+                console.error('Error broadcasting on peer join:', err);
+            }
+        }
     });
 
     TrysteroSync.onReceive(async (payload) => {
