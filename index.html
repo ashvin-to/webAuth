@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebAuth - Client-Side 2FA Vault</title>
+    <meta name="theme-color" content="#6366f1">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <link rel="apple-touch-icon" href="icon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -13,6 +17,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <!-- OTP Auth Library for TOTP code generation -->
     <script src="https://unpkg.com/otpauth@9.3.1/dist/otpauth.umd.min.js"></script>
+    <!-- QR code decoding for image/camera scanning -->
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -59,6 +65,11 @@
                             <input type="text" id="generatedRecoveryKey" readonly style="font-family: monospace; font-weight: 700; color: #38bdf8;">
                             <button type="button" class="btn btn-secondary btn-sm" id="copyRecoveryKeyBtn">Copy</button>
                         </div>
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <button type="button" class="btn btn-secondary btn-sm" id="showRecoveryQrBtn">Show QR Code</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="printRecoveryBtn">Print Backup</button>
+                        </div>
+                        <div id="recoveryQrBox" style="display: none; justify-content: center; margin-top: 12px;"></div>
                         <label style="display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;">
                             <input type="checkbox" id="recoveryKeyAck" style="width: auto;">
                             I have written down my recovery key. It cannot be recovered if lost.
@@ -79,6 +90,7 @@
                         <button id="scanCameraBtn" class="btn btn-accent">Scan QR</button>
                         <button id="addAccountBtn" class="btn btn-primary">+ Add</button>
                         <button id="exportBtn" class="btn btn-secondary">Backup File</button>
+                        <button id="exportMigrationBtn" class="btn btn-secondary">Export 2FA</button>
                         <button id="importFileBtn" class="btn btn-secondary">Import File</button>
                         <input type="file" id="importJsonFileInput" accept=".json,application/json" style="display: none;">
                     </div>
@@ -173,6 +185,15 @@
 
                     <div style="display: flex; gap: 10px; margin-top: 10px;">
                         <button type="button" class="btn btn-secondary" id="p2pSyncNowBtn" style="flex: 1;">Sync Now</button>
+                    </div>
+                    <div style="margin-top: 14px; border-top: 1px solid var(--card-border); padding-top: 12px;">
+                        <label class="p2p-label">QR Pairing</label>
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <button type="button" class="btn btn-secondary btn-sm" id="showP2pPairingQrBtn" style="flex: 1;">Show Pairing QR</button>
+                            <button type="button" class="btn btn-secondary btn-sm" id="scanP2pPairingQrBtn" style="flex: 1;">Scan Pairing QR</button>
+                        </div>
+                        <div id="p2pPairingQr" style="display: none; justify-content: center; margin-top: 12px;"></div>
+                        <p style="font-size: 0.75rem; color: var(--text-muted, #888); margin-top: 8px;" id="p2pPairingHint"></p>
                     </div>
                     <p style="font-size: 0.8rem; color: var(--text-muted, #888); margin-top: 8px;" id="p2pLastSyncText">Not synced yet</p>
                     <p style="font-size: 0.75rem; color: var(--text-muted, #888); margin-top: 4px;" id="p2pStrategyText"></p>
@@ -289,7 +310,19 @@
                         <label for="accSecret">Secret Key or URI</label>
                         <input type="text" id="accSecret" placeholder="Base32 key or otpauth:// / otpauth-migration:// URI" required autocomplete="off" data-bwignore="true" data-lpignore="true">
                     </div>
+                    <div class="form-group">
+                        <label for="accType">Account Type</label>
+                        <select id="accType" data-bwignore="true">
+                            <option value="TOTP">TOTP (time-based)</option>
+                            <option value="HOTP">HOTP (counter-based)</option>
+                            <option value="Steam">Steam</option>
+                        </select>
+                    </div>
                     <div class="form-group row-group">
+                        <div id="accCounterGroup" style="display: none;">
+                            <label for="accCounter">Counter (HOTP)</label>
+                            <input type="number" id="accCounter" value="0" min="0" data-bwignore="true">
+                        </div>
                         <div>
                             <label for="accPeriod">Period (s)</label>
                             <input type="number" id="accPeriod" value="30" min="10" max="120" data-bwignore="true">
@@ -335,6 +368,36 @@
             </div>
         </div>
 
+        <!-- Modal: Export otpauth-migration -->
+        <div id="exportModal" class="modal-overlay" style="display: none;">
+            <div class="modal-content card">
+                <div class="modal-header">
+                    <h3>Export Accounts (otpauth-migration)</h3>
+                    <button class="close-modal" id="closeExportModal">&times;</button>
+                </div>
+                <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">
+                    Scan with Google Authenticator, Aegis, Ente Auth, 2FAS, etc. to move your accounts to another app.
+                </p>
+                <p style="font-size: 0.8rem; color: var(--text-muted, #888); margin-bottom: 12px;" id="exportCountText"></p>
+                <div id="exportQrBox" style="display: flex; justify-content: center; padding: 8px 0 16px;"></div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button type="button" class="btn btn-primary btn-sm" id="copyMigrationUriBtn">Copy URI</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="downloadMigrationBtn">Download .txt</button>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="closeExportBtn">Close</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Print-only recovery backup area -->
+    <div id="printRecoveryArea" class="print-recovery">
+        <h1>WebAuth Vault — Emergency Recovery Key</h1>
+        <p>Keep this paper backup somewhere safe. It can unlock your vault if you forget your master password. This key is never stored on your device.</p>
+        <div class="print-recovery-key" id="printRecoveryKeyText"></div>
+        <div class="print-recovery-qr" id="printRecoveryQr"></div>
     </div>
 
     <div id="toastContainer" aria-live="polite"></div>

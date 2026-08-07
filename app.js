@@ -8,6 +8,7 @@ let cameraStream = null;
 let cameraAnimationId = null;
 let timerInterval = null;
 let activeDetailAccountId = null;
+let dragAccountId = null;
 
 const VAULT_STORAGE_KEY = 'webauth_encrypted_vault';
 const RECOVERY_KEY_STORAGE = 'webauth_recovery_key';
@@ -291,6 +292,11 @@ async function requestP2pSync() {
 
 document.addEventListener('DOMContentLoaded', () => {
     initTheme();
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW registration failed:', e));
+        });
+    }
     const themeBtn = document.getElementById('themeToggleBtn');
     if (themeBtn) {
         themeBtn.addEventListener('click', () => {
@@ -399,6 +405,29 @@ function generateRandomRecoveryKey() {
     return key;
 }
 
+function showRecoveryQr() {
+    const qrBox = document.getElementById('recoveryQrBox');
+    const keyEl = document.getElementById('generatedRecoveryKey');
+    if (!qrBox || !keyEl) return;
+    if (qrBox.style.display !== 'none' && qrBox.dataset.rendered === 'yes') {
+        qrBox.style.display = 'none';
+        return;
+    }
+    qrBox.style.display = 'flex';
+    SVGQRCode.renderInto(qrBox, keyEl.value, 170);
+    qrBox.dataset.rendered = 'yes';
+}
+
+function printRecoveryBackup() {
+    const keyEl = document.getElementById('generatedRecoveryKey');
+    const printKeyEl = document.getElementById('printRecoveryKeyText');
+    const printQrEl = document.getElementById('printRecoveryQr');
+    if (!keyEl || !printKeyEl || !printQrEl) return;
+    printKeyEl.textContent = keyEl.value;
+    SVGQRCode.renderInto(printQrEl, keyEl.value, 200);
+    window.print();
+}
+
 function setupEventListeners() {
     document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
     document.getElementById('lockBtn').addEventListener('click', lockVault);
@@ -449,6 +478,27 @@ function setupEventListeners() {
     const leaveP2pBtn = document.getElementById('leaveP2pSyncBtn');
     if (leaveP2pBtn) leaveP2pBtn.addEventListener('click', handleLeaveP2pSync);
 
+    const showPairingBtn = document.getElementById('showP2pPairingQrBtn');
+    if (showPairingBtn) showPairingBtn.addEventListener('click', showP2pPairingQr);
+    const scanPairingBtn = document.getElementById('scanP2pPairingQrBtn');
+    if (scanPairingBtn) scanPairingBtn.addEventListener('click', scanP2pPairingQr);
+
+    const showRecQrBtn = document.getElementById('showRecoveryQrBtn');
+    if (showRecQrBtn) showRecQrBtn.addEventListener('click', showRecoveryQr);
+    const printRecBtn = document.getElementById('printRecoveryBtn');
+    if (printRecBtn) printRecBtn.addEventListener('click', printRecoveryBackup);
+
+    const exportBtn = document.getElementById('exportMigrationBtn');
+    if (exportBtn) exportBtn.addEventListener('click', openExportModal);
+    const closeExport1 = document.getElementById('closeExportModal');
+    if (closeExport1) closeExport1.addEventListener('click', () => toggleModal('exportModal', false));
+    const closeExport2 = document.getElementById('closeExportBtn');
+    if (closeExport2) closeExport2.addEventListener('click', () => toggleModal('exportModal', false));
+    const copyMigBtn = document.getElementById('copyMigrationUriBtn');
+    if (copyMigBtn) copyMigBtn.addEventListener('click', copyMigrationUri);
+    const dlMigBtn = document.getElementById('downloadMigrationBtn');
+    if (dlMigBtn) dlMigBtn.addEventListener('click', downloadMigrationUri);
+
     const createFolderBtn = document.getElementById('createFolderSyncBtn');
     if (createFolderBtn) createFolderBtn.addEventListener('click', handleCreateFolderSync);
     const openFolderBtn = document.getElementById('openFolderSyncBtn');
@@ -459,6 +509,13 @@ function setupEventListeners() {
     if (unlinkBtn) unlinkBtn.addEventListener('click', handleUnlinkFolder);
     document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
     document.getElementById('emptyAddBtn').addEventListener('click', () => openAddModal('manual'));
+    const accTypeEl = document.getElementById('accType');
+    if (accTypeEl) {
+        accTypeEl.addEventListener('change', () => {
+            const counterGroup = document.getElementById('accCounterGroup');
+            if (counterGroup) counterGroup.style.display = accTypeEl.value === 'HOTP' ? 'block' : 'none';
+        });
+    }
     document.getElementById('closeAddModal').addEventListener('click', () => toggleModal('addModal', false));
     document.getElementById('cancelAddModal').addEventListener('click', () => toggleModal('addModal', false));
     
@@ -730,6 +787,36 @@ function openP2pSyncModal() {
         }
     }
     updateP2pStatusUI();
+}
+
+function showP2pPairingQr() {
+    const qrBox = document.getElementById('p2pPairingQr');
+    const hintEl = document.getElementById('p2pPairingHint');
+    if (!qrBox || !window.TrysteroSync || !masterKeyPassword) return;
+    const pass = TrysteroSync.getCustomPassphrase() || masterKeyPassword;
+    const isCustom = !!TrysteroSync.getCustomPassphrase();
+    if (qrBox.style.display !== 'none' && qrBox.dataset.rendered === 'yes') {
+        qrBox.style.display = 'none';
+        return;
+    }
+    qrBox.style.display = 'flex';
+    SVGQRCode.renderInto(qrBox, 'webauth-pair:' + pass, 190);
+    qrBox.dataset.rendered = 'yes';
+    if (hintEl) {
+        hintEl.textContent = isCustom
+            ? 'This QR encodes your custom sync passphrase. Scan it on the new device to pair instantly.'
+            : 'This QR encodes your master password as the sync passphrase. Scan it on the new device to pair instantly.';
+    }
+}
+
+function scanP2pPairingQr() {
+    if (!window.TrysteroSync) {
+        showToast('P2P Sync module is unavailable.', 'error');
+        return;
+    }
+    startCameraScanner();
+    const status = document.getElementById('cameraStatus');
+    if (status) status.textContent = 'Point camera at the pairing QR from the other device...';
 }
 
 async function handleJoinP2pSync() {
@@ -1033,6 +1120,25 @@ function issuerInitial(issuer) {
     return t ? t.charAt(0).toUpperCase() : '?';
 }
 
+function sortedVault() {
+    return [...vaultData].sort((a, b) => {
+        const pa = a.pinned ? 1 : 0;
+        const pb = b.pinned ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        return (a.sortOrder ?? 0) - (b.sortOrder ?? 0);
+    });
+}
+
+function togglePinAccount(event, id) {
+    event.stopPropagation();
+    const acc = vaultData.find(a => a.id === id);
+    if (!acc) return;
+    acc.pinned = !acc.pinned;
+    acc.updatedAt = Date.now();
+    markAccountChanged(acc);
+    saveVault().then(buildAccountsDOM);
+}
+
 function buildAccountsDOM() {
     const grid = document.getElementById('accountsList');
     const emptyState = document.getElementById('emptyState');
@@ -1049,19 +1155,53 @@ function buildAccountsDOM() {
         grid.style.display = 'grid';
     }
 
-    vaultData.forEach(acc => {
+    const items = sortedVault();
+    items.forEach(acc => {
         const card = document.createElement('div');
-        card.className = 'account-card';
+        card.className = 'account-card' + (acc.pinned ? ' pinned' : '');
         card.setAttribute('data-id', acc.id);
+        card.setAttribute('draggable', 'true');
         card.setAttribute('data-issuer', (acc.issuer || '').toLowerCase());
         card.setAttribute('data-account', (acc.account || '').toLowerCase());
         
         card.addEventListener('click', (e) => {
-            if (e.target.closest('.btn-danger') || e.target.closest('.code-display')) {
+            if (e.target.closest('.btn') || e.target.closest('.code-display')) {
                 return;
             }
             openAccountDetailModal(acc.id);
         });
+
+        card.addEventListener('dragstart', (e) => {
+            dragAccountId = acc.id;
+            card.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            try { e.dataTransfer.setData('text/plain', acc.id); } catch (err) {}
+        });
+        card.addEventListener('dragend', () => {
+            dragAccountId = null;
+            card.classList.remove('dragging');
+            grid.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        });
+        card.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (dragAccountId && dragAccountId !== acc.id) card.classList.add('drag-over');
+        });
+        card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+        card.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            card.classList.remove('drag-over');
+            if (dragAccountId && dragAccountId !== acc.id) {
+                reorderAccount(dragAccountId, acc.id);
+            }
+            dragAccountId = null;
+        });
+
+        const type = accountType(acc);
+        const hotpNextBtn = type === 'HOTP'
+            ? `<button class="btn-hotp-next" id="next-${acc.id}" title="Next counter" style="display:none;" onclick="advanceHotpCounter(event, '${acc.id}')">Next</button>`
+            : '';
 
         card.innerHTML = `
             <div class="account-header-row">
@@ -1070,10 +1210,14 @@ function buildAccountsDOM() {
                     <h4>${escapeHtml(acc.issuer)}</h4>
                     <p>${escapeHtml(acc.account)}</p>
                 </div>
-                <button class="btn btn-danger btn-sm" onclick="deleteAccountDirect(event, '${acc.id}')">Delete</button>
+                <div class="account-actions">
+                    <button class="btn btn-secondary btn-sm pin-btn" title="${acc.pinned ? 'Unpin' : 'Pin to top'}" onclick="togglePinAccount(event, '${acc.id}')">${acc.pinned ? '★' : '☆'}</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteAccountDirect(event, '${acc.id}')">Delete</button>
+                </div>
             </div>
             <div class="code-display" onclick="copyAccountCode(event, '${acc.id}')">
                 <span class="code-number" id="code-${acc.id}">------</span>
+                ${hotpNextBtn}
                 <span class="timer-circle" id="timer-${acc.id}">--s</span>
                 <span class="code-progress"><span class="code-progress-fill" id="fill-${acc.id}"></span></span>
             </div>
@@ -1082,6 +1226,16 @@ function buildAccountsDOM() {
     });
 
     updateTotpCodes();
+}
+
+function reorderAccount(draggedId, targetId) {
+    const from = vaultData.findIndex(a => a.id === draggedId);
+    const to = vaultData.findIndex(a => a.id === targetId);
+    if (from === -1 || to === -1 || from === to) return;
+    const [moved] = vaultData.splice(from, 1);
+    vaultData.splice(to, 0, moved);
+    vaultData.forEach((a, i) => { a.sortOrder = i; });
+    saveVault().then(buildAccountsDOM);
 }
 
 async function deleteAccountDirect(event, id) {
@@ -1111,16 +1265,25 @@ function openAccountDetailModal(id) {
     secretTextEl.setAttribute('data-secret', acc.secret);
     document.getElementById('toggleSecretBtn').textContent = 'Show';
 
-    document.getElementById('detailType').textContent = acc.type || 'TOTP';
+    const type = accountType(acc);
+    document.getElementById('detailType').textContent = type === 'STEAM' ? 'Steam' : (acc.type || 'TOTP');
     document.getElementById('detailAlgorithm').textContent = acc.algorithm || 'SHA1';
-    document.getElementById('detailDigits').textContent = acc.digits || '6';
-    document.getElementById('detailPeriod').textContent = `${acc.period || 30}s`;
+    document.getElementById('detailDigits').textContent = type === 'STEAM' ? '5' : (acc.digits || '6');
+    document.getElementById('detailPeriod').textContent = type === 'HOTP' ? `counter C${acc.counter || 0}` : `${acc.period || 30}s`;
 
     const container = document.getElementById('detailQrCanvas');
     const cleanIssuer = encodeURIComponent(acc.issuer.trim());
     const cleanAccount = encodeURIComponent(acc.account.trim());
-    const otpUri = `otpauth://totp/${cleanIssuer}:${cleanAccount}?secret=${acc.secret.replace(/\s+/g, '')}&issuer=${cleanIssuer}&period=${acc.period || 30}&digits=${acc.digits || 6}`;
-    
+    let otpUri;
+    if (type === 'HOTP') {
+        otpUri = `otpauth://hotp/${cleanIssuer}:${cleanAccount}?secret=${acc.secret.replace(/\s+/g, '')}&issuer=${cleanIssuer}&counter=${acc.counter || 0}&digits=${acc.digits || 6}`;
+    } else {
+        otpUri = `otpauth://totp/${cleanIssuer}:${cleanAccount}?secret=${acc.secret.replace(/\s+/g, '')}&issuer=${cleanIssuer}&period=${acc.period || 30}&digits=${acc.digits || 6}`;
+    }
+    if (type === 'STEAM') {
+        otpUri = `otpauth://totp/Steam%3A${cleanAccount.replace(/^Steam%3A/, '')}?secret=${acc.secret.replace(/\s+/g, '')}&issuer=Steam`;
+    }
+
     SVGQRCode.renderInto(container, otpUri, 180);
 
     toggleModal('detailModal', true);
@@ -1172,11 +1335,53 @@ function renderAccountsListOnly() {
     });
 }
 
+const STEAM_ALPHABET = '23456789BCDFGHJKMNPQRTVWXY';
+
+function generateSteamCode(secret, epoch) {
+    const counter = Math.floor(epoch / 30);
+    const counterBytes = new Array(8).fill(0);
+    let val = counter;
+    for (let i = 7; i >= 0; i--) {
+        counterBytes[i] = val & 0xff;
+        val = Math.floor(val / 256);
+    }
+    const keyWA = CryptoJS.lib.WordArray.create(base32DecodeString(secret));
+    const counterWA = CryptoJS.lib.WordArray.create(new Uint8Array(counterBytes));
+    const hmac = CryptoJS.HmacSHA1(counterWA, keyWA);
+    const hmacBytes = new Uint8Array(hmac.sigBytes);
+    for (let i = 0; i < hmac.sigBytes; i++) {
+        hmacBytes[i] = (hmac.words[i >> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+    }
+    const offset = hmacBytes[19] & 0x0f;
+    let full = ((hmacBytes[offset] & 0x7f) << 24) |
+               ((hmacBytes[offset + 1] & 0xff) << 16) |
+               ((hmacBytes[offset + 2] & 0xff) << 8) |
+               (hmacBytes[offset + 3] & 0xff);
+    let result = '';
+    for (let i = 0; i < 5; i++) {
+        result += STEAM_ALPHABET[full % 26];
+        full = Math.floor(full / 26);
+    }
+    return result;
+}
+
+function isSteamAccount(acc) {
+    return (acc.type || '').toUpperCase() === 'STEAM' ||
+           ((acc.type || 'TOTP').toUpperCase() === 'TOTP' && (acc.issuer || '').trim().toUpperCase() === 'STEAM');
+}
+
+function accountType(acc) {
+    if (isSteamAccount(acc)) return 'STEAM';
+    return (acc.type || 'TOTP').toUpperCase();
+}
+
 function updateTotpCodes() {
     const epoch = Math.floor(Date.now() / 1000);
     vaultData.forEach(acc => {
         const codeEl = document.getElementById(`code-${acc.id}`);
         const timerEl = document.getElementById(`timer-${acc.id}`);
+        const nextEl = document.getElementById(`next-${acc.id}`);
+        const progressEl = document.getElementById(`fill-${acc.id}`);
         if (!codeEl || !timerEl) return;
 
             try {
@@ -1184,33 +1389,75 @@ function updateTotpCodes() {
                 if (!cleanSecret || cleanSecret.length < 16 || cleanSecret.length > 64) {
                     throw new Error('Invalid secret length');
                 }
-                
-                const totp = new OTPAuth.TOTP({
-                    issuer: acc.issuer || 'Service',
-                    label: acc.account || 'Account',
-                    algorithm: acc.algorithm || "SHA1",
-                    digits: acc.digits || 6,
-                    period: acc.period || 30,
-                    secret: OTPAuth.Secret.fromBase32(cleanSecret)
-                });
-                const tokenCode = totp.generate();
+
+                const type = accountType(acc);
                 const period = acc.period || 30;
-                const remaining = period - (epoch % period);
-                
-                codeEl.textContent = `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
-                timerEl.textContent = `${remaining}s`;
+                let tokenCode;
+                let remaining = null;
+
+                if (type === 'STEAM') {
+                    tokenCode = generateSteamCode(cleanSecret, epoch);
+                    remaining = period - (epoch % period);
+                } else if (type === 'HOTP') {
+                    const hotp = new OTPAuth.HOTP({
+                        issuer: acc.issuer || 'Service',
+                        label: acc.account || 'Account',
+                        algorithm: acc.algorithm || "SHA1",
+                        digits: acc.digits || 6,
+                        counter: acc.counter || 0,
+                        secret: OTPAuth.Secret.fromBase32(cleanSecret)
+                    });
+                    tokenCode = hotp.generate();
+                } else {
+                    const totp = new OTPAuth.TOTP({
+                        issuer: acc.issuer || 'Service',
+                        label: acc.account || 'Account',
+                        algorithm: acc.algorithm || "SHA1",
+                        digits: acc.digits || 6,
+                        period: period,
+                        secret: OTPAuth.Secret.fromBase32(cleanSecret)
+                    });
+                    tokenCode = totp.generate();
+                    remaining = period - (epoch % period);
+                }
+
+                if (type === 'STEAM') {
+                    codeEl.textContent = tokenCode;
+                } else {
+                    codeEl.textContent = tokenCode.length > 6 ? tokenCode : `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
+                }
                 codeEl.setAttribute('data-fullcode', tokenCode);
 
-                const progressEl = document.getElementById(`fill-${acc.id}`);
-                if (progressEl) {
-                    progressEl.style.width = ((remaining / period) * 100) + '%';
-                    progressEl.style.background = remaining <= 5 ? 'var(--danger-color)' : remaining <= 10 ? 'var(--accent-cyan)' : 'var(--success-color)';
+                if (type === 'HOTP') {
+                    timerEl.textContent = `C${acc.counter || 0}`;
+                    if (nextEl) nextEl.style.display = 'inline-flex';
+                    if (progressEl) progressEl.style.width = '0%';
+                } else {
+                    timerEl.textContent = `${remaining}s`;
+                    if (nextEl) nextEl.style.display = 'none';
+                    if (progressEl) {
+                        progressEl.style.width = ((remaining / period) * 100) + '%';
+                        progressEl.style.background = remaining <= 5 ? 'var(--danger-color)' : remaining <= 10 ? 'var(--accent-cyan)' : 'var(--success-color)';
+                    }
                 }
             } catch (e) {
                 codeEl.textContent = 'INVALID';
                 timerEl.textContent = '--s';
                 console.debug(`TOTP error for ${acc.issuer || 'Unknown'} (${acc.account || 'Unknown'}):`, e.message);
             }
+    });
+}
+
+function advanceHotpCounter(event, id) {
+    event.stopPropagation();
+    const acc = vaultData.find(a => a.id === id);
+    if (!acc) return;
+    acc.counter = (acc.counter || 0) + 1;
+    acc.updatedAt = Date.now();
+    markAccountChanged(acc);
+    saveVault().then(() => {
+        updateTotpCodes();
+        showToast(`Counter advanced to C${acc.counter}`, 'success');
     });
 }
 
@@ -1273,6 +1520,8 @@ async function handleAddAccount(e) {
     let secret = inputSecret;
     let period = parseInt(document.getElementById('accPeriod').value) || 30;
     let digits = parseInt(document.getElementById('accDigits').value) || 6;
+    let type = document.getElementById('accType').value || 'TOTP';
+    let counter = parseInt(document.getElementById('accCounter').value) || 0;
 
     if (inputSecret.startsWith('otpauth://')) {
         try {
@@ -1282,6 +1531,12 @@ async function handleAddAccount(e) {
             secret = parsed.secret.base32;
             period = parsed.period || period;
             digits = parsed.digits || digits;
+            if (parsed.type === 'hotp') {
+                type = 'HOTP';
+                counter = parsed.counter || counter || 0;
+            } else if (parsed.type === 'totp' && (parsed.issuer || '').trim().toUpperCase() === 'STEAM') {
+                type = 'Steam';
+            }
         } catch (err) {
             showError(errorEl, 'Invalid otpauth:// URI string.');
             return;
@@ -1299,7 +1554,7 @@ async function handleAddAccount(e) {
     if (!issuer) issuer = 'Service';
     if (!account) account = 'Account';
 
-    await saveNewAccount({ issuer, account, secret, period, digits });
+    await saveNewAccount({ issuer, account, secret, period, digits, type, counter });
     toggleModal('addModal', false);
     document.getElementById('addAccountForm').reset();
     buildAccountsDOM();
@@ -1325,7 +1580,8 @@ async function saveNewAccount(acc) {
             period: acc.period || 30,
             digits: acc.digits || 6,
             algorithm: acc.algorithm || 'SHA1',
-            type: acc.type || 'TOTP',
+            type: (acc.type || 'TOTP').toUpperCase() === 'HOTP' ? 'HOTP' : isSteamAccount(acc) ? 'Steam' : (acc.type || 'TOTP'),
+            counter: acc.counter != null ? acc.counter : vaultData[existingIndex].counter,
             updatedAt: Date.now()
         };
         markAccountChanged(vaultData[existingIndex]);
@@ -1339,7 +1595,10 @@ async function saveNewAccount(acc) {
             period: acc.period || 30,
             digits: acc.digits || 6,
             algorithm: acc.algorithm || 'SHA1',
-            type: acc.type || 'TOTP',
+            type: (acc.type || 'TOTP').toUpperCase() === 'HOTP' ? 'HOTP' : isSteamAccount(acc) ? 'Steam' : (acc.type || 'TOTP'),
+            counter: acc.counter != null ? acc.counter : 0,
+            pinned: !!acc.pinned,
+            sortOrder: Date.now(),
             updatedAt: Date.now()
         };
         vaultData.push(newAccount);
@@ -1463,6 +1722,27 @@ async function parseAndAddQrPayload(payload) {
     logDebug(`Parsing QR payload prefix: ${payload.substring(0, 30)}...`);
 
     let cleanPayload = payload.trim();
+    if (cleanPayload.startsWith('webauth-pair:')) {
+        const pass = cleanPayload.slice('webauth-pair:'.length);
+        if (!window.TrysteroSync) {
+            showToast('P2P Sync module is unavailable.', 'error');
+            return;
+        }
+        if (pass) {
+            TrysteroSync.setCustomPassphrase(pass);
+            setupTrysteroListeners();
+            const joined = await TrysteroSync.join(pass);
+            updateP2pStatusUI();
+            if (joined) {
+                await broadcastP2pSnapshot();
+                showToast('Pairing complete — P2P sync enabled', 'success');
+            } else {
+                showToast('Pairing failed — could not join sync room', 'error');
+            }
+        }
+        return;
+    }
+
     if (cleanPayload.startsWith('webauth://sync/') || cleanPayload.startsWith('webauth://batch/')) {
         cleanPayload = cleanPayload.replace('webauth://sync/', '').replace('webauth://batch/', '');
         try {
@@ -1615,6 +1895,51 @@ function exportVaultFile() {
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
+}
+
+function buildMigrationUri() {
+    const migratable = vaultData.filter(a => accountType(a) !== 'STEAM');
+    return buildGoogleAuthMigrationUri(migratable);
+}
+
+function openExportModal() {
+    toggleModal('exportModal', true);
+    const qrBox = document.getElementById('exportQrBox');
+    qrBox.innerHTML = '';
+    try {
+        const uri = buildMigrationUri();
+        window.__migrationUri = uri;
+        SVGQRCode.renderInto(qrBox, uri, 200);
+        document.getElementById('exportCountText').textContent =
+            `Exporting ${vaultData.filter(a => accountType(a) !== 'STEAM').length} of ${vaultData.length} accounts (Steam accounts excluded).`;
+    } catch (e) {
+        document.getElementById('exportCountText').textContent =
+            `QR too large (${vaultData.length} accounts) — use "Download .txt" or "Copy URI" instead.`;
+        showToast('QR too large — use Copy URI or Download .txt', 'error');
+    }
+}
+
+function copyMigrationUri() {
+    const uri = window.__migrationUri || buildMigrationUri();
+    copyTextToClipboard(uri).then(() => {
+        showToast('otpauth-migration URI copied to clipboard', 'success');
+    }).catch(() => {
+        showToast('Copy failed — clipboard unavailable', 'error');
+    });
+}
+
+function downloadMigrationUri() {
+    const uri = window.__migrationUri || buildMigrationUri();
+    const blob = new Blob([uri], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'webauth_otpauth_migration.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast('Migration URI downloaded', 'success');
 }
 
 async function handleImportVaultFile() {

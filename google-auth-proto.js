@@ -27,6 +27,77 @@ function base32EncodeBuffer(uint8Array) {
     return output;
 }
 
+function base32DecodeString(str) {
+    const clean = String(str || '').toUpperCase().replace(/\s+/g, '').replace(/=+$/, '');
+    let bits = 0;
+    let value = 0;
+    const out = [];
+    for (const ch of clean) {
+        const idx = BASE32_CHARS.indexOf(ch);
+        if (idx === -1) continue;
+        value = (value << 5) | idx;
+        bits += 5;
+        if (bits >= 8) {
+            out.push((value >>> (bits - 8)) & 0xff);
+            bits -= 8;
+        }
+    }
+    return new Uint8Array(out);
+}
+
+function encodeVarint(val) {
+    const out = [];
+    let v = Number(val) >>> 0;
+    while (v >= 0x80) {
+        out.push((v & 0x7f) | 0x80);
+        v >>>= 7;
+    }
+    out.push(v);
+    return out;
+}
+
+function protobufBytesField(fieldNum, bytes) {
+    return [...encodeVarint((fieldNum << 3) | 2), ...encodeVarint(bytes.length), ...bytes];
+}
+
+function protobufStringField(fieldNum, str) {
+    return protobufBytesField(fieldNum, Array.from(new TextEncoder().encode(String(str))));
+}
+
+function protobufVarintField(fieldNum, val) {
+    return [...encodeVarint(fieldNum << 3), ...encodeVarint(val)];
+}
+
+/**
+ * Builds a Google Authenticator otpauth-migration:// URI from vault accounts.
+ * `secret` field holds the RAW secret bytes; name/label = field 2, issuer = field 3,
+ * algorithm enum (1=SHA1,2=SHA256,3=SHA512), digits enum (1=6,2=8), type enum (1=HOTP,2=TOTP).
+ */
+function buildGoogleAuthMigrationUri(accounts) {
+    const payload = [];
+    for (const acc of accounts || []) {
+        const inner = [
+            ...protobufBytesField(1, base32DecodeString(acc.secret || '')),
+            ...protobufStringField(2, acc.account || 'Account'),
+            ...protobufStringField(3, acc.issuer || 'Service')
+        ];
+        const alg = String(acc.algorithm || 'SHA1').toUpperCase();
+        inner.push(...protobufVarintField(4, alg === 'SHA256' ? 2 : alg === 'SHA512' ? 3 : 1));
+        inner.push(...protobufVarintField(5, (acc.digits || 6) === 8 ? 2 : 1));
+        inner.push(...protobufVarintField(6, String(acc.type || 'TOTP').toUpperCase() === 'HOTP' ? 1 : 2));
+        if (acc.counter != null) inner.push(...protobufVarintField(7, acc.counter));
+        payload.push(...protobufBytesField(1, inner));
+    }
+    payload.push(...protobufVarintField(2, 1)); // version
+    payload.push(...protobufVarintField(3, 1)); // batch_size
+
+    const bytes = new Uint8Array(payload);
+    let binary = '';
+    bytes.forEach(b => { binary += String.fromCharCode(b); });
+    const b64 = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return 'otpauth-migration://offline?data=' + b64;
+}
+
 /**
  * Protobuf parser for Google Authenticator Migration payloads.
  */
@@ -88,6 +159,7 @@ function parseGoogleAuthMigrationUri(uriString) {
                 let digits = 6;
                 let algorithm = "SHA1";
                 let type = "TOTP";
+                let counter = 0;
 
                 while (pos < endPos) {
                     const subTag = readVarint();
@@ -119,6 +191,8 @@ function parseGoogleAuthMigrationUri(uriString) {
                     } else if (subField === 6 && subWire === 0) { // Type
                         const typeVal = readVarint();
                         if (typeVal === 1) type = "HOTP";
+                    } else if (subField === 7 && subWire === 0) { // Counter (HOTP)
+                        counter = readVarint();
                     } else {
                         if (subWire === 0) readVarint();
                         else if (subWire === 2) {
@@ -150,7 +224,8 @@ function parseGoogleAuthMigrationUri(uriString) {
                         period: 30,
                         digits: digits,
                         algorithm: algorithm,
-                        type: type
+                        type: type,
+                        counter: type === 'HOTP' ? counter : 0
                     });
                 }
             } else {
