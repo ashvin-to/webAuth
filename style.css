@@ -443,7 +443,6 @@ input[type="number"]:focus {
     justify-content: center;
     padding: 16px 0 0 0;
 }
-}
 
 /* ==========================================================================
    Mobile-Optimized Clean UI (Screens < 640px)
@@ -501,5 +500,209 @@ input[type="number"]:focus {
         max-height: 85vh;
         border-bottom-left-radius: 0;
         border-bottom-right-radius: 0;
+    }
+}
+
+/* ==========================================================================
+   UI Polish: light theme, header chip, avatars, countdown, toasts, mobile
+   ========================================================================== */
+
+/* --- Header layout --- */
+.header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.header-tools {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* --- P2P header chip --- */
+.p2p-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+.chip-offline { background: rgba(100, 116, 139, 0.18); color: var(--text-secondary); }
+.chip-connected { background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.35); }
+.chip-connecting { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border-color: rgba(245, 158, 11, 0.35); }
+
+/* --- P2P modal status badges (were previously unstyled) --- */
+.p2p-status-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+.badge-disconnected { background: rgba(100, 116, 139, 0.2); color: var(--text-secondary); }
+.badge-connected { background: rgba(16, 185, 129, 0.18); color: #34d399; }
+.badge-connecting { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+
+/* --- Account avatar --- */
+.account-header-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.acc-avatar {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.account-info {
+    flex: 1;
+    min-width: 0;
+}
+.account-info h4,
+.account-info p {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --- TOTP countdown bar --- */
+.code-display {
+    position: relative;
+    overflow: hidden;
+}
+.code-progress {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.08);
+}
+.code-progress-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--success-color);
+    transition: width 1s linear;
+}
+.code-display.copied .code-number {
+    color: var(--success-color);
+}
+
+/* --- Toasts --- */
+#toastContainer {
+    position: fixed;
+    bottom: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    z-index: 100000;
+    pointer-events: none;
+    width: min(90vw, 420px);
+}
+.toast {
+    background: rgba(30, 41, 59, 0.95);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    padding: 10px 16px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    transform: translateY(12px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    text-align: center;
+}
+.toast-show { opacity: 1; transform: translateY(0); }
+.toast-hide { opacity: 0; transform: translateY(8px); }
+.toast-success { border-color: rgba(16, 185, 129, 0.5); }
+.toast-error { border-color: rgba(239, 68, 68, 0.5); }
+
+/* --- Light theme --- */
+html[data-theme="light"] {
+    --bg-gradient: radial-gradient(circle at 50% 0%, #e0e7ff 0%, #f1f5f9 55%, #dbe2ee 100%);
+    --card-bg: rgba(255, 255, 255, 0.75);
+    --card-border: rgba(15, 23, 42, 0.12);
+    --card-hover-border: rgba(99, 102, 241, 0.5);
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --glass-shadow: 0 20px 30px -10px rgba(15, 23, 42, 0.16);
+}
+html[data-theme="light"] .logo-area h1 {
+    background: linear-gradient(135deg, #1e1b4b 0%, #4f46e5 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+html[data-theme="light"] input[type="text"],
+html[data-theme="light"] input[type="password"],
+html[data-theme="light"] input[type="number"] {
+    background: rgba(255, 255, 255, 0.9);
+    border-color: rgba(15, 23, 42, 0.15);
+    color: var(--text-primary);
+}
+html[data-theme="light"] .btn-secondary {
+    background: rgba(15, 23, 42, 0.08);
+    color: var(--text-primary);
+}
+html[data-theme="light"] .btn-secondary:hover {
+    background: rgba(15, 23, 42, 0.14);
+}
+html[data-theme="light"] .btn-accent {
+    color: #083344;
+}
+html[data-theme="light"] .code-display {
+    background: rgba(241, 245, 249, 0.9);
+}
+html[data-theme="light"] .code-number {
+    color: #0284c7;
+}
+html[data-theme="light"] .account-card:hover {
+    border-color: rgba(15, 23, 42, 0.28);
+}
+html[data-theme="light"] .code-progress {
+    background: rgba(15, 23, 42, 0.08);
+}
+html[data-theme="light"] .toast {
+    background: rgba(255, 255, 255, 0.95);
+    color: var(--text-primary);
+    border-color: var(--card-border);
+}
+
+/* --- Mobile polish --- */
+@media (max-width: 640px) {
+    .app-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .header-right {
+        align-items: stretch;
+    }
+    .header-actions {
+        justify-content: center;
+    }
+    .acc-avatar {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        font-size: 0.95rem;
     }
 }

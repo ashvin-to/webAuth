@@ -21,11 +21,17 @@
             <div class="logo-area">
                 <h1>WebAuth Vault</h1>
             </div>
-            <div class="header-actions" id="headerActions" style="display: none;">
-                <button id="p2pSyncModalBtn" class="btn btn-accent">P2P Sync</button>
-                <button id="folderSyncBtn" class="btn btn-accent">Sync Folder</button>
-                <button id="changePassModalBtn" class="btn btn-secondary">Change Password</button>
-                <button id="lockBtn" class="btn btn-secondary">Lock Vault</button>
+            <div class="header-right">
+                <div class="header-tools">
+                    <span id="p2pHeaderChip" class="p2p-chip chip-offline" title="P2P auto-sync status" style="display: none;">P2P Off</span>
+                    <button id="themeToggleBtn" class="btn btn-secondary btn-sm" title="Toggle light/dark theme">Light</button>
+                </div>
+                <div class="header-actions" id="headerActions" style="display: none;">
+                    <button id="p2pSyncModalBtn" class="btn btn-accent">P2P Sync</button>
+                    <button id="folderSyncBtn" class="btn btn-accent">Sync Folder</button>
+                    <button id="changePassModalBtn" class="btn btn-secondary">Change Password</button>
+                    <button id="lockBtn" class="btn btn-secondary">Lock Vault</button>
+                </div>
             </div>
         </header>
 
@@ -331,12 +337,14 @@
 
     </div>
 
+    <div id="toastContainer" aria-live="polite"></div>
+
     <script src="webcrypto-fallback.js"></script>
     <script src="google-auth-proto.js"></script>
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
     <script src="file-sync.js"></script>
-    <script type="module" src="p2p-sync-trystero.js?v=6"></script>
-    <script src="app.js?v=6"></script>
+    <script type="module" src="p2p-sync-trystero.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>

@@ -290,9 +290,34 @@ async function requestP2pSync() {
 
 
 document.addEventListener('DOMContentLoaded', () => {
+    initTheme();
+    const themeBtn = document.getElementById('themeToggleBtn');
+    if (themeBtn) {
+        themeBtn.addEventListener('click', () => {
+            const current = document.documentElement.getAttribute('data-theme');
+            applyTheme(current === 'light' ? 'dark' : 'light');
+        });
+    }
     initAuthScreen();
     setupEventListeners();
 });
+
+function applyTheme(theme) {
+    const isLight = theme === 'light';
+    document.documentElement.setAttribute('data-theme', isLight ? 'light' : 'dark');
+    const btn = document.getElementById('themeToggleBtn');
+    if (btn) btn.textContent = isLight ? 'Dark' : 'Light';
+    try { localStorage.setItem('webauth_theme', theme); } catch (e) {}
+}
+
+function initTheme() {
+    let theme = 'dark';
+    try {
+        const saved = localStorage.getItem('webauth_theme');
+        if (saved === 'light' || saved === 'dark') theme = saved;
+    } catch (e) {}
+    applyTheme(theme);
+}
 
 async function initAuthScreen() {
     try {
@@ -382,8 +407,11 @@ function setupEventListeners() {
     if (copyRecBtn) {
         copyRecBtn.addEventListener('click', () => {
             const keyVal = document.getElementById('generatedRecoveryKey').value;
-            navigator.clipboard.writeText(keyVal);
-            alert('Emergency Recovery Key copied to clipboard!');
+            copyTextToClipboard(keyVal).then(() => {
+                showToast('Emergency Recovery Key copied to clipboard', 'success');
+            }).catch(() => {
+                showToast('Copy failed — clipboard unavailable', 'error');
+            });
         });
     }
     // Linked Folder Sync Modal
@@ -566,6 +594,22 @@ async function syncWithLinkedFile() {
 }
 
 function updateP2pStatusUI() {
+    const chip = document.getElementById('p2pHeaderChip');
+    if (chip) {
+        if (!window.TrysteroSync || (!TrysteroSync.isActive() && !TrysteroSync.isConnected())) {
+            chip.style.display = 'none';
+        } else if (TrysteroSync.isConnected()) {
+            const peerCount = TrysteroSync.getPeerCount();
+            chip.style.display = 'inline-flex';
+            chip.textContent = peerCount > 0 ? `P2P · ${peerCount}` : 'P2P · searching';
+            chip.className = peerCount > 0 ? 'p2p-chip chip-connected' : 'p2p-chip chip-connecting';
+        } else {
+            chip.style.display = 'inline-flex';
+            chip.textContent = 'P2P · connecting…';
+            chip.className = 'p2p-chip chip-connecting';
+        }
+    }
+
     const statusEl = document.getElementById('p2pSyncStatusText');
     if (statusEl) {
         if (!window.TrysteroSync || !TrysteroSync.isConnected()) {
@@ -690,7 +734,7 @@ function openP2pSyncModal() {
 
 async function handleJoinP2pSync() {
     if (!window.TrysteroSync) {
-        alert('P2P Sync module is unavailable.');
+        showToast('P2P Sync module is unavailable.', 'error');
         console.warn('[P2P] window.TrysteroSync is undefined — p2p-sync-trystero.js may have failed to load.');
         return;
     }
@@ -779,7 +823,7 @@ function setupTrysteroListeners() {
                 await broadcastP2pSnapshot();
             }
         }
-        alert(passVal ? 'Custom P2P sync passphrase saved!' : 'Custom P2P sync passphrase cleared (reverted to master password).');
+        showToast(passVal ? 'Custom P2P sync passphrase saved!' : 'Custom P2P sync passphrase cleared (reverted to master password).', 'success');
     });
 
     TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {
@@ -800,6 +844,7 @@ function setupTrysteroListeners() {
             p2pErrorEl.textContent = 'P2P note: ' + msg;
             p2pErrorEl.style.display = 'block';
         }
+        updateP2pStatusUI();
         console.warn('[P2P]', msg);
     });
 
@@ -969,6 +1014,25 @@ function openDeviceSyncModal() {
     document.getElementById('syncPairCode').textContent = `Total Accounts Ready: ${vaultData.length}`;
 }
 
+const AVATAR_COLORS = ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#3b82f6'];
+
+function hashString(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h);
+}
+
+function avatarColorFor(issuer) {
+    return AVATAR_COLORS[hashString((issuer || '?').trim().toLowerCase()) % AVATAR_COLORS.length];
+}
+
+function issuerInitial(issuer) {
+    const t = (issuer || '?').trim();
+    return t ? t.charAt(0).toUpperCase() : '?';
+}
+
 function buildAccountsDOM() {
     const grid = document.getElementById('accountsList');
     const emptyState = document.getElementById('emptyState');
@@ -1001,6 +1065,7 @@ function buildAccountsDOM() {
 
         card.innerHTML = `
             <div class="account-header-row">
+                <div class="acc-avatar" style="background: ${avatarColorFor(acc.issuer)};">${issuerInitial(acc.issuer)}</div>
                 <div class="account-info">
                     <h4>${escapeHtml(acc.issuer)}</h4>
                     <p>${escapeHtml(acc.account)}</p>
@@ -1010,6 +1075,7 @@ function buildAccountsDOM() {
             <div class="code-display" onclick="copyAccountCode(event, '${acc.id}')">
                 <span class="code-number" id="code-${acc.id}">------</span>
                 <span class="timer-circle" id="timer-${acc.id}">--s</span>
+                <span class="code-progress"><span class="code-progress-fill" id="fill-${acc.id}"></span></span>
             </div>
         `;
         grid.appendChild(card);
@@ -1134,6 +1200,12 @@ function updateTotpCodes() {
                 codeEl.textContent = `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
                 timerEl.textContent = `${remaining}s`;
                 codeEl.setAttribute('data-fullcode', tokenCode);
+
+                const progressEl = document.getElementById(`fill-${acc.id}`);
+                if (progressEl) {
+                    progressEl.style.width = ((remaining / period) * 100) + '%';
+                    progressEl.style.background = remaining <= 5 ? 'var(--danger-color)' : remaining <= 10 ? 'var(--accent-cyan)' : 'var(--success-color)';
+                }
             } catch (e) {
                 codeEl.textContent = 'INVALID';
                 timerEl.textContent = '--s';
@@ -1481,14 +1553,57 @@ async function parseAndAddQrPayload(payload) {
     }
 }
 
+function copyTextToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+    }
+    return new Promise((resolve, reject) => {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            resolve();
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+function showToast(message, type) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = 'toast ' + (type ? 'toast-' + type : '');
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('toast-show'));
+    setTimeout(() => {
+        toast.classList.remove('toast-show');
+        toast.classList.add('toast-hide');
+        setTimeout(() => toast.remove(), 320);
+    }, 2600);
+}
+
 function copyAccountCode(event, id) {
     event.stopPropagation();
     const codeEl = document.getElementById(`code-${id}`);
-    if (codeEl) {
-        const fullCode = codeEl.getAttribute('data-fullcode') || codeEl.textContent.replace(/\s+/g, '');
-        navigator.clipboard.writeText(fullCode);
-        alert('Code copied to clipboard!');
-    }
+    if (!codeEl) return;
+    const fullCode = codeEl.getAttribute('data-fullcode') || codeEl.textContent.replace(/\s+/g, '');
+    const codeDisplay = codeEl.closest('.code-display');
+    copyTextToClipboard(fullCode).then(() => {
+        if (codeDisplay) {
+            codeDisplay.classList.add('copied');
+            setTimeout(() => codeDisplay.classList.remove('copied'), 1200);
+        }
+        showToast('Code copied to clipboard', 'success');
+    }).catch(() => {
+        showToast('Copy failed — clipboard unavailable', 'error');
+    });
 }
 
 function exportVaultFile() {
