@@ -89,11 +89,15 @@ function logDebug(msg) {
         const msg = (e && e.message) || (e && e.type) || '';
         // Expected WebRTC noise (Trystero/simple-peer); surfaced via the P2P modal note instead.
         if (msg.includes('Ice connection failed')) return;
+        if (msg.includes('Cannot create so many PeerConnections')) return;
+        if (msg.includes('Connection failed')) return;
         show('[ERROR] ' + msg + ' @ ' + (e.filename || '') + ':' + (e.lineno || '?'));
     });
     window.addEventListener('unhandledrejection', (e) => {
         const msg = (e.reason && (e.reason.message || e.reason)) || 'unhandled rejection';
         if (String(msg).includes('Ice connection failed')) return;
+        if (String(msg).includes('Cannot create so many PeerConnections')) return;
+        if (String(msg).includes('Connection failed')) return;
         show('[PROMISE] ' + msg);
     });
     window.showAppError = show;

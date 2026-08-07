@@ -32,7 +32,9 @@ const TRACKER_URLS = [
 const NOSTR_RELAY_URLS = [
     'wss://nos.lol',
     'wss://relay.snort.social',
-    'wss://relay.nostr.net'
+    'wss://relay.nostr.net',
+    'wss://nostr.mom',
+    'wss://relay.primal.net'
 ];
 
 // Multiple signaling strategies joined simultaneously. Peers only need ONE shared
@@ -53,8 +55,38 @@ let errorCallbacks = new Set();
 let lastErrorMsg = null;
 let isJoined = false;
 
+// Failure backoff: on restrictive networks every connection attempt fails, and
+// Trystero re-announces every ~5s, accumulating RTCPeerConnections until the
+// browser throws "Cannot create so many PeerConnections". When enough
+// consecutive failures occur with zero connected peers, pause to free them.
+let consecutiveFailures = 0;
+let backoffUntil = 0;
+let backoffReason = null;
+const FAILURE_THRESHOLD = 5;
+const BACKOFF_MS = 5 * 60 * 1000;
+
+function isFailureMessage(msg) {
+    return /peer failed|Ice connection failed|Cannot create so many PeerConnections/i.test(msg);
+}
+
 function notifyError(msg) {
     lastErrorMsg = msg;
+
+    if (isFailureMessage(msg)) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= FAILURE_THRESHOLD && getPeerCount() === 0 && Date.now() >= backoffUntil) {
+            consecutiveFailures = 0;
+            backoffUntil = Date.now() + BACKOFF_MS;
+            backoffReason = 'WebRTC appears blocked on this network — P2P paused for 5 minutes. Click "Enable P2P Auto-Sync" to retry.';
+            console.warn('[P2P] ' + backoffReason);
+            try { leave(); } catch (e) {}
+            errorCallbacks.forEach(cb => {
+                try { cb(backoffReason); } catch (e) {}
+            });
+            return;
+        }
+    }
+
     errorCallbacks.forEach(cb => {
         try { cb(msg); } catch (e) {}
     });
@@ -170,6 +202,8 @@ function wireRoom(room) {
     const [sendVault, getVault] = room.makeAction('vault');
     getVault(handleIncomingVaultMessage);
     room.onPeerJoin(peerId => {
+        consecutiveFailures = 0;
+        backoffReason = null;
         allPeers.add(peerId);
         peerCount = allPeers.size;
         notifyPeerChange(peerId, 'join');
@@ -278,6 +312,7 @@ function leave() {
     allPeers.clear();
     peerCount = 0;
     strategyStatus = [];
+    backoffReason = null;
     sendVaultAction = null;
     getVaultAction = null;
     isJoined = false;
