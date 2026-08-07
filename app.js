@@ -2,6 +2,7 @@
  * Application Logic & TOTP Generator with IndexedDB & Auto File Backup
  */
 let masterKeyPassword = null;
+let recoveryKeyInMemory = null;
 let vaultData = [];
 let cameraStream = null;
 let cameraAnimationId = null;
@@ -62,6 +63,17 @@ async function loadFromIndexedDB(key) {
     } catch (e) {
         console.error("IndexedDB Load Error:", e);
         return null;
+    }
+}
+
+async function removeFromIndexedDB(key) {
+    try {
+        const db = await openIndexedDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).delete(key);
+        return tx.complete;
+    } catch (e) {
+        console.error("IndexedDB Remove Error:", e);
     }
 }
 
@@ -213,8 +225,7 @@ async function persistVaultLocal() {
     localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
     await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
 
-    let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
-    if (!storedRecKey) storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
+    const storedRecKey = recoveryKeyInMemory;
 
     if (storedRecKey) {
         const backupEncryptedPayload = await CryptoVault.encrypt(vaultData, storedRecKey);
@@ -301,6 +312,13 @@ async function initAuthScreen() {
         const confirmGroup = document.getElementById('confirmPassGroup');
         const recoveryNotice = document.getElementById('recoveryKeyNotice');
         const submitBtn = document.getElementById('authSubmitBtn');
+        const ackEl = document.getElementById('recoveryKeyAck');
+
+        // Security: purge any recovery key previously stored in plaintext.
+        try {
+            localStorage.removeItem(RECOVERY_KEY_STORAGE);
+            await removeFromIndexedDB(RECOVERY_KEY_STORAGE);
+        } catch (e) {}
 
         const cachedPass = sessionStorage.getItem(SESSION_CACHE_KEY);
         if (existingVault && cachedPass) {
@@ -326,12 +344,20 @@ async function initAuthScreen() {
             recoveryNotice.style.display = 'block';
 
             submitBtn.textContent = 'Create Vault';
+            // Block submit until the user confirms they saved the recovery key.
+            if (ackEl && submitBtn) {
+                submitBtn.disabled = true;
+                ackEl.addEventListener('change', () => {
+                    submitBtn.disabled = !ackEl.checked;
+                });
+            }
         } else {
             authTitle.textContent = 'Unlock Vault';
             authSubtitle.textContent = 'Enter your master password or Recovery Key to decrypt your 2FA keys.';
             confirmGroup.style.display = 'none';
             recoveryNotice.style.display = 'none';
             submitBtn.textContent = 'Unlock';
+            if (submitBtn) submitBtn.disabled = false;
         }
     } catch (e) {
         console.error("Initialization error:", e);
@@ -606,8 +632,8 @@ async function handleChangePasswordSubmit(e) {
         return;
     }
 
-    if (!newInput || newInput.length < 6) {
-        showError('New master password must be at least 6 characters.');
+    if (!newInput || newInput.length < 12) {
+        showError('New master password must be at least 12 characters.');
         return;
     }
 
@@ -810,20 +836,25 @@ async function handleAuthSubmit(e) {
     errorEl.style.display = 'none';
 
     if (!existingVault) {
-        if (pass.length < 6) {
-            showError(errorEl, 'Master password must be at least 6 characters.');
+        if (pass.length < 12) {
+            showError(errorEl, 'Master password must be at least 12 characters.');
             return;
         }
         if (pass !== confirmPass) {
             showError(errorEl, 'Passwords do not match.');
             return;
         }
+        const ackEl = document.getElementById('recoveryKeyAck');
+        if (ackEl && !ackEl.checked) {
+            showError(errorEl, 'Please confirm you have saved your Emergency Recovery Key before creating the vault.');
+            return;
+        }
         masterKeyPassword = pass;
         vaultData = [];
-        
-        const recKey = document.getElementById('generatedRecoveryKey').value;
-        localStorage.setItem(RECOVERY_KEY_STORAGE, recKey);
-        await saveToIndexedDB(RECOVERY_KEY_STORAGE, recKey);
+
+        // Recovery key is shown ONCE and never persisted — the user must save it
+        // offline. It is kept in memory so the recovery backup can be (re)built.
+        recoveryKeyInMemory = document.getElementById('generatedRecoveryKey').value;
 
         try {
             await saveVault();
@@ -834,15 +865,11 @@ async function handleAuthSubmit(e) {
             return;
         }
     } else {
-        let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
-        if (!storedRecKey) {
-            storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
-        }
-        
         try {
             const encryptedPayload = JSON.parse(existingVault);
             vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
             masterKeyPassword = pass;
+            recoveryKeyInMemory = null;
             sessionStorage.setItem(SESSION_CACHE_KEY, pass);
             normalizeVault();
             await loadTombstones();
@@ -851,25 +878,26 @@ async function handleAuthSubmit(e) {
             return;
         } catch (err) {}
 
-        if (storedRecKey && pass === storedRecKey) {
-            try {
-                let backupPayloadStr = localStorage.getItem(BACKUP_AUTOSAVE_KEY);
-                if (!backupPayloadStr) {
-                    backupPayloadStr = await loadFromIndexedDB(BACKUP_AUTOSAVE_KEY);
-                }
-                if (backupPayloadStr) {
-                    const encryptedPayload = JSON.parse(backupPayloadStr);
-                    vaultData = await CryptoVault.decrypt(encryptedPayload, storedRecKey);
-                    masterKeyPassword = storedRecKey;
-                    sessionStorage.setItem(SESSION_CACHE_KEY, storedRecKey);
-                    normalizeVault();
-                    await loadTombstones();
-                    logDebug(`Vault unlocked via Emergency Recovery Key!`);
-                    showDashboard();
-                    return;
-                }
-            } catch (err) {}
-        }
+        // Password failed — the typed value may be the Emergency Recovery Key,
+        // which decrypts the recovery backup (stored under BACKUP_AUTOSAVE_KEY).
+        try {
+            let backupPayloadStr = localStorage.getItem(BACKUP_AUTOSAVE_KEY);
+            if (!backupPayloadStr) {
+                backupPayloadStr = await loadFromIndexedDB(BACKUP_AUTOSAVE_KEY);
+            }
+            if (backupPayloadStr) {
+                const encryptedPayload = JSON.parse(backupPayloadStr);
+                vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
+                masterKeyPassword = pass;
+                recoveryKeyInMemory = pass;
+                sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+                normalizeVault();
+                await loadTombstones();
+                logDebug(`Vault unlocked via Emergency Recovery Key!`);
+                showDashboard();
+                return;
+            }
+        } catch (recErr) {}
 
         showError(errorEl, 'Incorrect master password or recovery key.');
     }
@@ -1561,38 +1589,10 @@ async function handleImportVaultFile() {
                 alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
-            console.error('Import error with master password, trying recovery key:', err);
-            
-            // Try decrypting with stored Recovery Key if available
-            let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
-            if (!storedRecKey) storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
+            console.error('Import error with master password:', err);
 
-            if (storedRecKey) {
-                try {
-                    let rawText = e.target.result.trim();
-                    let parsed = JSON.parse(rawText);
-                    while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-                    const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
-                    if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
-                        const decryptedData = await CryptoVault.decrypt(encObj, storedRecKey);
-                        if (decryptedData && Array.isArray(decryptedData)) {
-                            let count = 0;
-                            for (let acc of decryptedData) {
-                                await saveNewAccount(acc);
-                                count++;
-                            }
-                            buildAccountsDOM();
-                            alert(`Successfully imported ${count} account(s) using Emergency Recovery Key!`);
-                            fileInput.value = '';
-                            return;
-                        }
-                    }
-                } catch (recErr) {
-                    console.error('Recovery key import failed:', recErr);
-                }
-            }
-
-            // If master password and stored recovery key fail, prompt user to enter the password/recovery key used when creating the backup
+            // No recovery key is stored on-device by design; prompt the user to
+            // enter the password or recovery key this backup file was encrypted with.
             const customPass = prompt('This backup file was created under a different password or recovery key. Please enter the password or recovery key for this backup file:');
             if (customPass && customPass.trim().length > 0) {
                 try {

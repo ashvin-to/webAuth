@@ -48,11 +48,15 @@
                     </div>
                     <div id="recoveryKeyNotice" class="form-group" style="display: none; background: rgba(99, 102, 241, 0.15); border: 1px solid var(--accent-color); padding: 12px; border-radius: 8px;">
                         <label style="color: var(--accent-cyan); font-weight: 700;">YOUR EMERGENCY RECOVERY KEY</label>
-                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px;">Save this recovery key in a safe place. If you forget your password, entering this recovery key will unlock your vault.</p>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px;">Save this recovery key in a safe place. If you forget your password, entering this recovery key will unlock your vault. It is shown only once and never stored on this device.</p>
                         <div style="display: flex; gap: 8px; align-items: center;">
                             <input type="text" id="generatedRecoveryKey" readonly style="font-family: monospace; font-weight: 700; color: #38bdf8;">
                             <button type="button" class="btn btn-secondary btn-sm" id="copyRecoveryKeyBtn">Copy</button>
                         </div>
+                        <label style="display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;">
+                            <input type="checkbox" id="recoveryKeyAck" style="width: auto;">
+                            I have written down my recovery key. It cannot be recovered if lost.
+                        </label>
                     </div>
                     <div id="authError" class="error-message" style="display: none;"></div>
                     <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-block">Unlock</button>
@@ -332,7 +336,7 @@
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
     <script src="file-sync.js"></script>
-    <script type="module" src="p2p-sync-trystero.js?v=5"></script>
-    <script src="app.js?v=5"></script>
+    <script type="module" src="p2p-sync-trystero.js?v=6"></script>
+    <script src="app.js?v=6"></script>
 </body>
 </html>

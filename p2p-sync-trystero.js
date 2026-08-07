@@ -188,9 +188,10 @@ let activeRooms = [];
 let allPeers = new Set();
 let strategyStatus = [];
 
-function makeRtcOpts(strategyOpts) {
+function makeRtcOpts(strategyOpts, password) {
     return {
         appId: 'webauth-vault-sync',
+        password: password,
         rtcConfig: { iceServers: ICE_SERVERS },
         config: { iceServers: ICE_SERVERS },
         iceServers: ICE_SERVERS,
@@ -250,7 +251,7 @@ async function join(passphraseOverride) {
     for (const strat of STRATEGY_MODULES) {
         try {
             const { joinRoom } = await import(strat.module);
-            const room = joinRoom(makeRtcOpts(strat.opts), roomIdCurrent);
+            const room = joinRoom(makeRtcOpts(strat.opts, effectivePass), roomIdCurrent);
             wireRoom(room);
             activeRooms.push({ room, label: strat.label });
             strategyStatus.push(strat.label + ': joined');
@@ -258,7 +259,7 @@ async function join(passphraseOverride) {
 
             // Overlap secondary room for previous week
             try {
-                const secRoom = joinRoom(makeRtcOpts(strat.opts), roomIdPrev);
+                const secRoom = joinRoom(makeRtcOpts(strat.opts, effectivePass), roomIdPrev);
                 wireRoom(secRoom);
                 activeRooms.push({ room: secRoom, label: strat.label + '-prev' });
             } catch (secErr) {
