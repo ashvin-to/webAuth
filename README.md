@@ -33,13 +33,18 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 
 ### 3. Real-Time P2P Sync (Trystero WebRTC)
 - **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Devices unlocked with the **same master password** automatically derive identical room IDs and connect in real-time without typing or scanning pairing codes. Newly joining peers automatically receive an initial symmetric sync.
+- **Conflict Resolution (Last-Write-Wins)**: Every account carries an `updatedAt` timestamp. Concurrent edits on different devices converge to the most recently modified version instead of silently dropping changes.
+- **Delete Propagation (Tombstones)**: Deleted accounts leave an encrypted tombstone (`webauth_tombstones` in `localStorage`/`IndexedDB`), so deletions propagate to all devices and deleted accounts do not resurrect from older broadcasts.
+- **Efficient Delta Sync**: Account saves broadcast only the changed accounts (deltas) instead of re-encrypting and sending the entire vault. Full encrypted snapshots are exchanged on peer join, tab refocus, or when explicitly requested via the **Sync Now** button, which also asks connected peers to resend their vaults.
+- **Sync Status Feedback**: The P2P modal shows connection state and the **last-synced** timestamp.
 - **Peer Approval Gate**: Unrecognized devices are assigned a persistent 8-character fingerprint (`deviceId`). Incoming broadcasts from unapproved devices trigger an explicit **Approve / Ignore** prompt before any accounts are merged.
 - **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
 - **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers (`SHA-256(passphrase + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
-  - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/torrent` and uses public BitTorrent trackers for WebRTC signaling (connection establishment).
-  - Signaling trackers see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
-  - Configured with Google STUN and free-tier TURN relay servers (Open Relay Project) as fallback for restrictive NATs/firewalls. Free-tier TURN servers have community bandwidth/reliability limits.
+  - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/...` and uses public signaling for peer discovery.
+  - **Multi-Strategy Redundancy**: The app joins the same room across **three independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`), Nostr relays (`/nostr`), and MQTT brokers (`/mqtt`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
+  - **ICE/TURN**: Configured with Cloudflare, Google, and STUN protocols STUN servers plus free-tier TURN relay servers (Open Relay Project) as a fallback for restrictive NATs/firewalls.
+  - Signaling services see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
   - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.
 
 ---

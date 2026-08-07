@@ -7,9 +7,9 @@ const STORAGE_KEY_ROOM = 'webauth_trystero_room';
 const STORAGE_KEY_ACTIVE = 'webauth_trystero_active';
 
 const ICE_SERVERS = [
+    { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:openrelay.metered.ca:80' },
     {
         urls: [
             'turn:openrelay.metered.ca:80',
@@ -21,7 +21,29 @@ const ICE_SERVERS = [
     }
 ];
 
-let roomInstance = null;
+// Curated public WebSocket trackers for the torrent signaling strategy.
+const TRACKER_URLS = [
+    'wss://tracker.openwebtorrent.com',
+    'wss://tracker.btorrent.xyz',
+    'wss://tracker.openwebtorrent.com:443/announce'
+];
+
+// Public Nostr relays that accept Trystero's ephemeral kind 29333 signaling events.
+const NOSTR_RELAY_URLS = [
+    'wss://nos.lol',
+    'wss://relay.snort.social',
+    'wss://relay.nostr.net'
+];
+
+// Multiple signaling strategies joined simultaneously. Peers only need ONE shared
+// strategy to reach each other, so a blocked tracker or relay no longer kills sync.
+// NOTE: Trystero's getRelays reads the `relayUrls` config key for ALL strategies,
+// including torrent (the docs' "trackerUrls" is ignored).
+const STRATEGY_MODULES = [
+    { label: 'torrent', module: 'https://esm.sh/trystero@0.19.0/torrent', opts: { relayUrls: TRACKER_URLS } },
+    { label: 'nostr', module: 'https://esm.sh/trystero@0.19.0/nostr', opts: { relayUrls: NOSTR_RELAY_URLS } }
+];
+
 let sendVaultAction = null;
 let getVaultAction = null;
 let peerCount = 0;
@@ -130,114 +152,134 @@ function notifyPeerChange(peerId, action) {
     });
 }
 
-let secondaryRoomInstance = null;
+let activeRooms = [];
+let allPeers = new Set();
+let strategyStatus = [];
+
+function makeRtcOpts(strategyOpts) {
+    return {
+        appId: 'webauth-vault-sync',
+        rtcConfig: { iceServers: ICE_SERVERS },
+        config: { iceServers: ICE_SERVERS },
+        iceServers: ICE_SERVERS,
+        ...strategyOpts
+    };
+}
+
+function wireRoom(room) {
+    const [sendVault, getVault] = room.makeAction('vault');
+    getVault(handleIncomingVaultMessage);
+    room.onPeerJoin(peerId => {
+        allPeers.add(peerId);
+        peerCount = allPeers.size;
+        notifyPeerChange(peerId, 'join');
+    });
+    room.onPeerLeave(peerId => {
+        allPeers.delete(peerId);
+        peerCount = allPeers.size;
+        notifyPeerChange(peerId, 'leave');
+    });
+    room.__sendVault = sendVault;
+}
+
+const handleIncomingVaultMessage = (rawMessage, peerId) => {
+    let deviceId = peerId;
+    let payload = rawMessage;
+    try {
+        const parsed = typeof rawMessage === 'string' ? JSON.parse(rawMessage) : rawMessage;
+        if (parsed && parsed.deviceId && parsed.payload) {
+            deviceId = parsed.deviceId;
+            payload = parsed.payload;
+        }
+    } catch (e) {}
+
+    receiveCallbacks.forEach(cb => {
+        try { cb(payload, peerId, deviceId); } catch (e) {}
+    });
+};
 
 async function join(passphraseOverride) {
     const effectivePass = passphraseOverride || getCustomPassphrase();
     if (!effectivePass) return false;
-    
+
     const roomIdCurrent = await deriveRoomId(effectivePass, 0);
     const roomIdPrev = await deriveRoomId(effectivePass, -7);
     if (!roomIdCurrent) return false;
 
-    if (isJoined && roomInstance) {
+    if (isJoined && activeRooms.length > 0) {
         return true;
     }
 
-    try {
-        const { joinRoom } = await import('https://esm.sh/trystero@0.19.0/torrent');
-        const rtcOpts = {
-            appId: 'webauth-vault-sync',
-            rtcConfig: { iceServers: ICE_SERVERS },
-            config: { iceServers: ICE_SERVERS },
-            iceServers: ICE_SERVERS
-        };
+    let joinedAny = false;
+    strategyStatus = [];
 
-        roomInstance = joinRoom(rtcOpts, roomIdCurrent);
-        
-        const [sendVault, getVault] = roomInstance.makeAction('vault');
-        sendVaultAction = sendVault;
-        getVaultAction = getVault;
-
-        const handleIncomingVaultMessage = (rawMessage, peerId) => {
-            let deviceId = peerId;
-            let payload = rawMessage;
-            try {
-                const parsed = typeof rawMessage === 'string' ? JSON.parse(rawMessage) : rawMessage;
-                if (parsed && parsed.deviceId && parsed.payload) {
-                    deviceId = parsed.deviceId;
-                    payload = parsed.payload;
-                }
-            } catch (e) {}
-
-            receiveCallbacks.forEach(cb => {
-                try { cb(payload, peerId, deviceId); } catch (e) {}
-            });
-        };
-
-        getVaultAction(handleIncomingVaultMessage);
-
-        const peersMap = new Set();
-
-        roomInstance.onPeerJoin(peerId => {
-            peersMap.add(peerId);
-            peerCount = peersMap.size;
-            notifyPeerChange(peerId, 'join');
-        });
-
-        roomInstance.onPeerLeave(peerId => {
-            peersMap.delete(peerId);
-            peerCount = peersMap.size;
-            notifyPeerChange(peerId, 'leave');
-        });
-
-        // Overlap secondary room for previous week
+    for (const strat of STRATEGY_MODULES) {
         try {
-            secondaryRoomInstance = joinRoom(rtcOpts, roomIdPrev);
-            const [, getVaultSecondary] = secondaryRoomInstance.makeAction('vault');
-            getVaultSecondary(handleIncomingVaultMessage);
-        } catch (secErr) {
-            console.warn('Secondary room join warning:', secErr);
-        }
+            const { joinRoom } = await import(strat.module);
+            const room = joinRoom(makeRtcOpts(strat.opts), roomIdCurrent);
+            wireRoom(room);
+            activeRooms.push({ room, label: strat.label });
+            strategyStatus.push(strat.label + ': joined');
+            joinedAny = true;
 
-        isJoined = true;
-        setActive(true);
-        notifyPeerChange();
-        return true;
-    } catch (err) {
-        console.warn('Trystero P2P module failed to initialize (CDN/network unavailable):', err);
+            // Overlap secondary room for previous week
+            try {
+                const secRoom = joinRoom(makeRtcOpts(strat.opts), roomIdPrev);
+                wireRoom(secRoom);
+                activeRooms.push({ room: secRoom, label: strat.label + '-prev' });
+            } catch (secErr) {
+                console.warn(strat.label + ' secondary room join warning:', secErr);
+            }
+        } catch (err) {
+            console.warn('Trystero strategy "' + strat.label + '" failed to initialize:', err);
+            strategyStatus.push(strat.label + ': failed (' + (err && err.message || err) + ')');
+            notifyError('P2P signaling unavailable via ' + strat.label + (err && err.message ? ' (' + err.message + ')' : ''));
+        }
+    }
+
+    if (!joinedAny) {
         isJoined = false;
+        setActive(false);
         return false;
     }
+
+    isJoined = true;
+    setActive(true);
+    notifyPeerChange();
+    return true;
 }
 
 function broadcast(serializedPayload) {
-    if (!isJoined || !sendVaultAction) return false;
-    try {
-        const msgObj = {
-            deviceId: getDeviceId(),
-            payload: serializedPayload
-        };
-        sendVaultAction(JSON.stringify(msgObj));
-        return true;
-    } catch (err) {
-        console.error('Trystero broadcast error:', err);
-        return false;
+    if (!isJoined || activeRooms.length === 0) return false;
+    const msgObj = {
+        deviceId: getDeviceId(),
+        payload: serializedPayload
+    };
+    const serialized = JSON.stringify(msgObj);
+    let any = false;
+    for (const { room } of activeRooms) {
+        try {
+            if (room && room.__sendVault) {
+                room.__sendVault(serialized);
+                any = true;
+            }
+        } catch (err) {
+            console.error('Trystero broadcast error:', err);
+        }
     }
+    return any;
 }
 
 function leave() {
-    if (roomInstance) {
-        try { roomInstance.leave(); } catch (e) {}
-        roomInstance = null;
+    for (const { room } of activeRooms) {
+        try { room.leave(); } catch (e) {}
     }
-    if (secondaryRoomInstance) {
-        try { secondaryRoomInstance.leave(); } catch (e) {}
-        secondaryRoomInstance = null;
-    }
+    activeRooms = [];
+    allPeers.clear();
+    peerCount = 0;
+    strategyStatus = [];
     sendVaultAction = null;
     getVaultAction = null;
-    peerCount = 0;
     isJoined = false;
     setActive(false);
     notifyPeerChange();
@@ -273,6 +315,10 @@ function getLastError() {
     return lastErrorMsg;
 }
 
+function getStrategyStatus() {
+    return strategyStatus.slice();
+}
+
 window.TrysteroSync = {
     join,
     leave,
@@ -281,6 +327,7 @@ window.TrysteroSync = {
     onPeerChange,
     onError,
     getLastError,
+    getStrategyStatus,
     getPeerCount,
     deriveRoomId,
     getDeviceId,

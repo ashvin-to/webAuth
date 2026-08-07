@@ -147,6 +147,7 @@
                             <button type="button" class="btn btn-primary btn-sm" id="approveP2pPeerBtn">Approve</button>
                             <button type="button" class="btn btn-secondary btn-sm" id="ignoreP2pPeerBtn">Ignore</button>
                         </div>
+                    </div>
                     <div style="margin-top: 12px;">
                         <label class="p2p-label" for="p2pCustomPassphraseInput">Sync Passphrase (optional — leave blank to use master password)</label>
                         <div style="display: flex; gap: 8px; margin-top: 4px;">
@@ -159,10 +160,18 @@
                         <button type="button" class="btn btn-primary" id="joinP2pSyncBtn" style="flex: 1;">Enable P2P Auto-Sync</button>
                         <button type="button" class="btn btn-danger" id="leaveP2pSyncBtn" style="flex: 1;">Disable P2P Auto-Sync</button>
                     </div>
+
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <button type="button" class="btn btn-secondary" id="p2pSyncNowBtn" style="flex: 1;">Sync Now</button>
+                    </div>
+                    <p style="font-size: 0.8rem; color: var(--text-muted, #888); margin-top: 8px;" id="p2pLastSyncText">Not synced yet</p>
+                    <p style="font-size: 0.75rem; color: var(--text-muted, #888); margin-top: 4px;" id="p2pStrategyText"></p>
+                    <p style="font-size: 0.75rem; color: #f87171; margin-top: 4px; display: none;" id="p2pErrorText"></p>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" id="closeP2pSyncBtn">Close</button>
                 </div>
+            </div>
         </div>
 
         <!-- Modal: Change Master Password -->
@@ -323,7 +332,7 @@
     <script src="crypto-vault.js"></script>
     <script src="qr-helper.js"></script>
     <script src="file-sync.js"></script>
-    <script type="module" src="p2p-sync-trystero.js"></script>
-    <script src="app.js"></script>
+    <script type="module" src="p2p-sync-trystero.js?v=4"></script>
+    <script src="app.js?v=4"></script>
 </body>
 </html>

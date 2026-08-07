@@ -12,6 +12,13 @@ const VAULT_STORAGE_KEY = 'webauth_encrypted_vault';
 const RECOVERY_KEY_STORAGE = 'webauth_recovery_key';
 const BACKUP_AUTOSAVE_KEY = 'webauth_auto_backup_vault';
 const SESSION_CACHE_KEY = 'webauth_session_pass';
+const TOMBSTONES_STORAGE_KEY = 'webauth_tombstones';
+
+// --- P2P sync state (last-write-wins merge + delete tombstones) ---
+let tombstoneMap = new Map();       // secret -> { secret, updatedAt }
+let lastSyncAt = 0;                 // epoch ms of last successful P2P exchange
+let pendingSyncChanges = { upserts: new Map(), deletes: new Map() };
+const TOMBSTONE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
 
 // --- IndexedDB Persistent Vault Backup Store ---
 const DB_NAME = 'WebAuthPersistentVaultDB';
@@ -61,6 +68,211 @@ async function loadFromIndexedDB(key) {
 function logDebug(msg) {
     console.log("[DEBUG]", msg);
 }
+
+// --- Global error trap: surfaces runtime errors visibly for diagnosis ---
+(function () {
+    function show(msg) {
+        try {
+            let box = document.getElementById('errorLogBox');
+            if (!box) {
+                box = document.createElement('div');
+                box.id = 'errorLogBox';
+                box.style.cssText = 'position:fixed;bottom:8px;left:8px;right:8px;max-height:40vh;overflow:auto;z-index:99999;background:rgba(20,20,30,.95);color:#f87171;font:11px/1.4 monospace;padding:8px 10px;border-radius:8px;border:1px solid #f87171;white-space:pre-wrap;';
+                document.body.appendChild(box);
+            }
+            const line = document.createElement('div');
+            line.textContent = msg;
+            box.appendChild(line);
+        } catch (e) {}
+    }
+    window.addEventListener('error', (e) => {
+        const msg = (e && e.message) || (e && e.type) || '';
+        // Expected WebRTC noise (Trystero/simple-peer); surfaced via the P2P modal note instead.
+        if (msg.includes('Ice connection failed')) return;
+        show('[ERROR] ' + msg + ' @ ' + (e.filename || '') + ':' + (e.lineno || '?'));
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+        const msg = (e.reason && (e.reason.message || e.reason)) || 'unhandled rejection';
+        if (String(msg).includes('Ice connection failed')) return;
+        show('[PROMISE] ' + msg);
+    });
+    window.showAppError = show;
+})();
+
+// --- P2P / file-sync merge helpers ---
+
+function normalizeVault() {
+    vaultData = (vaultData || []).map(a => ({ ...a, updatedAt: a.updatedAt || 0 }));
+}
+
+async function loadTombstones() {
+    if (!masterKeyPassword) return;
+    let raw = localStorage.getItem(TOMBSTONES_STORAGE_KEY);
+    if (!raw) raw = await loadFromIndexedDB(TOMBSTONES_STORAGE_KEY);
+    if (!raw) return;
+    try {
+        const decrypted = await CryptoVault.decrypt(JSON.parse(raw), masterKeyPassword);
+        const list = Array.isArray(decrypted) ? decrypted : [];
+        tombstoneMap = new Map(list.map(d => [d.secret, { secret: d.secret, updatedAt: d.updatedAt || 0 }]));
+        pruneTombstones();
+    } catch (e) {
+        console.warn('Could not load tombstones:', e);
+    }
+}
+
+async function persistTombstones() {
+    if (!masterKeyPassword) return;
+    pruneTombstones();
+    const encrypted = await CryptoVault.encrypt(Array.from(tombstoneMap.values()), masterKeyPassword);
+    const serialized = JSON.stringify(encrypted);
+    localStorage.setItem(TOMBSTONES_STORAGE_KEY, serialized);
+    await saveToIndexedDB(TOMBSTONES_STORAGE_KEY, serialized);
+}
+
+function pruneTombstones() {
+    const cutoff = Date.now() - TOMBSTONE_MAX_AGE_MS;
+    for (const [secret, t] of tombstoneMap) {
+        if (t.updatedAt < cutoff) tombstoneMap.delete(secret);
+    }
+}
+
+function markAccountChanged(acc) {
+    if (!acc || !acc.secret) return;
+    pendingSyncChanges.upserts.set(acc.secret, acc);
+    pendingSyncChanges.deletes.delete(acc.secret);
+}
+
+function markAccountDeleted(secret, updatedAt) {
+    if (!secret) return;
+    pendingSyncChanges.upserts.delete(secret);
+    pendingSyncChanges.deletes.set(secret, { secret, updatedAt: updatedAt || Date.now() });
+}
+
+// Merge remote accounts + deletes using last-write-wins. Returns true if local data changed.
+async function mergeRemoteAccounts(remoteAccounts, remoteDeletes) {
+    if (!masterKeyPassword) return false;
+    let changed = false;
+    const localBySecret = new Map(vaultData.map(a => [a.secret, a]));
+
+    // 1) Apply incoming deletes (tombstones) first
+    for (const del of (remoteDeletes || [])) {
+        if (!del || !del.secret) continue;
+        const delTs = del.updatedAt || 0;
+        const existingTomb = tombstoneMap.get(del.secret);
+        if (existingTomb && existingTomb.updatedAt > delTs) continue;
+        const local = localBySecret.get(del.secret);
+        if (local && (local.updatedAt || 0) <= delTs) {
+            localBySecret.delete(del.secret);
+            tombstoneMap.set(del.secret, { secret: del.secret, updatedAt: delTs });
+            changed = true;
+        } else if (!local && !existingTomb) {
+            tombstoneMap.set(del.secret, { secret: del.secret, updatedAt: delTs });
+            changed = true;
+        }
+    }
+
+    // 2) Apply incoming accounts (last-write-wins by updatedAt)
+    for (const acc of (remoteAccounts || [])) {
+        if (!acc || !acc.secret) continue;
+        const accTs = acc.updatedAt || 0;
+        const tomb = tombstoneMap.get(acc.secret);
+        if (tomb && accTs <= tomb.updatedAt) continue;
+        const local = localBySecret.get(acc.secret);
+        if (!local) {
+            localBySecret.set(acc.secret, acc);
+            tombstoneMap.delete(acc.secret);
+            changed = true;
+        } else if (accTs > (local.updatedAt || 0)) {
+            localBySecret.set(acc.secret, acc);
+            tombstoneMap.delete(acc.secret);
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        vaultData = Array.from(localBySecret.values());
+        await persistTombstones();
+        await persistVaultLocal();
+        buildAccountsDOM();
+        logDebug(`Sync merge applied: ${vaultData.length} account(s) after merge.`);
+    }
+    return changed;
+}
+
+// Write vault + recovery backup + linked file locally (no P2P broadcast).
+async function persistVaultLocal() {
+    if (!masterKeyPassword) return;
+
+    const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
+    const serializedPayload = JSON.stringify(encryptedPayload);
+
+    localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
+    await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
+
+    let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
+    if (!storedRecKey) storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
+
+    if (storedRecKey) {
+        const backupEncryptedPayload = await CryptoVault.encrypt(vaultData, storedRecKey);
+        const serializedBackup = JSON.stringify(backupEncryptedPayload);
+        localStorage.setItem(BACKUP_AUTOSAVE_KEY, serializedBackup);
+        await saveToIndexedDB(BACKUP_AUTOSAVE_KEY, serializedBackup);
+    }
+
+    if (window.FileSync && FileSync.hasFile()) {
+        await syncWithLinkedFile();
+    }
+
+    logDebug(`Vault persisted locally. Total accounts: ${vaultData.length}`);
+}
+
+// Broadcast a full encrypted snapshot of the entire vault + tombstones.
+async function broadcastP2pSnapshot() {
+    if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) {
+        console.log('[P2P] snapshot skipped (not connected / no key)');
+        return;
+    }
+    const message = { full: true, accounts: vaultData, deletes: Array.from(tombstoneMap.values()) };
+    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+    const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
+    console.log('[P2P] snapshot broadcast:', ok ? 'OK' : 'FAILED', '(accounts=' + vaultData.length + ', deletes=' + tombstoneMap.size + ')');
+    if (ok) lastSyncAt = Date.now();
+    return ok;
+}
+
+// Broadcast only the accounts that changed since the last broadcast (delta).
+async function broadcastP2pDelta() {
+    if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) return false;
+    if (pendingSyncChanges.upserts.size === 0 && pendingSyncChanges.deletes.size === 0) return false;
+    const message = {
+        full: false,
+        accounts: Array.from(pendingSyncChanges.upserts.values()),
+        deletes: Array.from(pendingSyncChanges.deletes.values())
+    };
+    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+    const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
+    console.log('[P2P] delta broadcast:', ok ? 'OK' : 'FAILED', '(upserts=' + pendingSyncChanges.upserts.size + ', deletes=' + pendingSyncChanges.deletes.size + ')');
+    if (ok) {
+        pendingSyncChanges.upserts.clear();
+        pendingSyncChanges.deletes.clear();
+        lastSyncAt = Date.now();
+    }
+    return ok;
+}
+
+// Ask all connected peers to resend their snapshot, then send ours.
+async function requestP2pSync() {
+    if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) {
+        alert('P2P sync is not connected. Enable P2P Auto-Sync first.');
+        return;
+    }
+    const message = { request: true };
+    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+    TrysteroSync.broadcast(JSON.stringify(encrypted));
+    await broadcastP2pSnapshot();
+    logDebug('P2P sync requested from peers.');
+}
+
 
 document.addEventListener('DOMContentLoaded', () => {
     initAuthScreen();
@@ -229,6 +441,7 @@ function setupEventListeners() {
     // Import Backup JSON File
     const importFileInput = document.getElementById('importJsonFileInput');
     document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
+    importFileInput.addEventListener('change', handleImportVaultFile);
 }
 
 function updateFolderSyncUI() {
@@ -282,9 +495,11 @@ async function handleUnlinkFolder() {
     updateFolderSyncUI();
 }
 
+let syncingLinkedFile = false;
 async function syncWithLinkedFile() {
+    if (syncingLinkedFile) return;
     if (!window.FileSync || !FileSync.hasFile() || !masterKeyPassword) return;
-
+    syncingLinkedFile = true;
     try {
         const fileContents = await FileSync.readVaultFromFile();
         if (fileContents && fileContents.trim()) {
@@ -292,19 +507,7 @@ async function syncWithLinkedFile() {
                 const parsedPayload = JSON.parse(fileContents);
                 const decryptedData = await CryptoVault.decrypt(parsedPayload, masterKeyPassword);
                 if (decryptedData && Array.isArray(decryptedData)) {
-                    const existingSecrets = new Set(vaultData.map(a => a.secret));
-                    let mergedCount = 0;
-                    for (let remoteAcc of decryptedData) {
-                        if (!existingSecrets.has(remoteAcc.secret)) {
-                            vaultData.push(remoteAcc);
-                            existingSecrets.add(remoteAcc.secret);
-                            mergedCount++;
-                        }
-                    }
-                    if (mergedCount > 0) {
-                        buildAccountsDOM();
-                        logDebug(`Linked file sync applied: merged ${mergedCount} new account(s).`);
-                    }
+                    await mergeRemoteAccounts(decryptedData, []);
                 }
             } catch (err) {
                 console.warn('Linked file decrypt error:', err);
@@ -327,26 +530,42 @@ async function syncWithLinkedFile() {
         }
     } catch (err) {
         console.error('Error during linked file sync:', err);
+    } finally {
+        syncingLinkedFile = false;
     }
 }
 
 function updateP2pStatusUI() {
     const statusEl = document.getElementById('p2pSyncStatusText');
-    if (!statusEl) return;
-
-    if (!window.TrysteroSync || !TrysteroSync.isConnected()) {
-        statusEl.textContent = 'Disconnected';
-        statusEl.className = 'p2p-status-badge badge-disconnected';
-        return;
+    if (statusEl) {
+        if (!window.TrysteroSync || !TrysteroSync.isConnected()) {
+            statusEl.textContent = 'Disconnected';
+            statusEl.className = 'p2p-status-badge badge-disconnected';
+        } else {
+            const peerCount = TrysteroSync.getPeerCount();
+            if (peerCount > 0) {
+                statusEl.textContent = `Connected (${peerCount} device(s) online)`;
+                statusEl.className = 'p2p-status-badge badge-connected';
+            } else {
+                statusEl.textContent = 'Waiting for peer...';
+                statusEl.className = 'p2p-status-badge badge-connecting';
+            }
+        }
     }
 
-    const peerCount = TrysteroSync.getPeerCount();
-    if (peerCount > 0) {
-        statusEl.textContent = `Connected (${peerCount} device(s) online)`;
-        statusEl.className = 'p2p-status-badge badge-connected';
-    } else {
-        statusEl.textContent = 'Waiting for peer...';
-        statusEl.className = 'p2p-status-badge badge-connecting';
+    const lastSyncEl = document.getElementById('p2pLastSyncText');
+    if (lastSyncEl) {
+        lastSyncEl.textContent = lastSyncAt
+            ? `Last synced: ${new Date(lastSyncAt).toLocaleTimeString()}`
+            : 'Not synced yet';
+    }
+
+    const strategyEl = document.getElementById('p2pStrategyText');
+    if (strategyEl && window.TrysteroSync && TrysteroSync.isConnected()) {
+        const status = TrysteroSync.getStrategyStatus ? TrysteroSync.getStrategyStatus() : [];
+        strategyEl.textContent = 'Signaling: ' + (status.length ? status.join(' · ') : 'connecting…');
+    } else if (strategyEl) {
+        strategyEl.textContent = '';
     }
 }
 
@@ -403,12 +622,7 @@ async function handleChangePasswordSubmit(e) {
 
         // Re-encrypt local storage & IndexedDB
         await saveVault();
-
-        // Re-encrypt linked file if present
-        if (window.FileSync && FileSync.hasFile()) {
-            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-            await FileSync.writeVaultToFile(JSON.stringify(encryptedPayload));
-        }
+        await persistTombstones();
 
         // Re-join P2P room with new password hash if active
         if (window.TrysteroSync && TrysteroSync.isActive()) {
@@ -416,9 +630,8 @@ async function handleChangePasswordSubmit(e) {
             setupTrysteroListeners();
             const customPass = TrysteroSync.getCustomPassphrase();
             const joined = await TrysteroSync.join(customPass || masterKeyPassword);
-            if (joined && vaultData.length > 0) {
-                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+            if (joined) {
+                await broadcastP2pSnapshot();
             }
         }
 
@@ -448,18 +661,19 @@ function openP2pSyncModal() {
 async function handleJoinP2pSync() {
     if (!window.TrysteroSync) {
         alert('P2P Sync module is unavailable.');
+        console.warn('[P2P] window.TrysteroSync is undefined — p2p-sync-trystero.js may have failed to load.');
         return;
     }
     if (!masterKeyPassword) return;
     setupTrysteroListeners();
     const customPass = TrysteroSync.getCustomPassphrase();
+    console.log('[P2P] attempting join, customPass set:', !!customPass, 'connected:', TrysteroSync.isConnected());
     const joined = await TrysteroSync.join(customPass || masterKeyPassword);
+    console.log('[P2P] join result:', joined, 'peerCount:', TrysteroSync.getPeerCount());
     updateP2pStatusUI();
     if (joined) {
-        if (vaultData.length > 0 && masterKeyPassword) {
-            const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-            TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
-        }
+        await broadcastP2pSnapshot();
+        console.log('[P2P] snapshot broadcast attempted after join');
     }
 }
 
@@ -487,24 +701,19 @@ async function processIncomingP2pPayload(payload) {
     try {
         const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
         const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
-        if (decryptedData && Array.isArray(decryptedData)) {
-            const existingSecrets = new Set(vaultData.map(a => a.secret));
-            let mergedCount = 0;
-            for (let remoteAcc of decryptedData) {
-                if (!existingSecrets.has(remoteAcc.secret)) {
-                    vaultData.push(remoteAcc);
-                    existingSecrets.add(remoteAcc.secret);
-                    mergedCount++;
-                }
-            }
-            if (mergedCount > 0) {
-                buildAccountsDOM();
-                await saveVault();
-                logDebug(`Remote Trystero P2P sync applied & bridged: merged ${mergedCount} new account(s).`);
+        console.log('[P2P] received payload decrypted:', Array.isArray(decryptedData) ? 'legacy-array' : (decryptedData && decryptedData.request ? 'request' : 'snapshot/delta'));
+        if (Array.isArray(decryptedData)) {
+            // Legacy format: plain full vault array
+            await mergeRemoteAccounts(decryptedData, []);
+        } else if (decryptedData && typeof decryptedData === 'object') {
+            if (decryptedData.request) {
+                await broadcastP2pSnapshot();
+            } else {
+                await mergeRemoteAccounts(decryptedData.accounts || [], decryptedData.deletes || []);
             }
         }
     } catch (err) {
-        console.warn('Trystero decryption / merge error:', err);
+        console.warn('[P2P] decrypt/merge error:', err);
     }
 }
 
@@ -536,24 +745,37 @@ function setupTrysteroListeners() {
             TrysteroSync.leave();
             const joined = await TrysteroSync.join(passVal || masterKeyPassword);
             updateP2pStatusUI();
-            if (joined && vaultData.length > 0 && masterKeyPassword) {
-                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
+            if (joined) {
+                await broadcastP2pSnapshot();
             }
         }
         alert(passVal ? 'Custom P2P sync passphrase saved!' : 'Custom P2P sync passphrase cleared (reverted to master password).');
     });
 
     TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {
+        console.log('[P2P] peer change:', action, 'peerId:', peerId, 'total:', peerCount);
         updateP2pStatusUI();
-        if (action === 'join' && masterKeyPassword && vaultData.length > 0) {
-            try {
-                const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-                TrysteroSync.broadcast(JSON.stringify(encryptedPayload));
-                logDebug(`Symmetric P2P broadcast sent to newly joined peer (${peerId || 'peer'})`);
-            } catch (err) {
-                console.error('Error broadcasting on peer join:', err);
-            }
+        if (action === 'join' && masterKeyPassword) {
+            await broadcastP2pSnapshot();
+            logDebug(`P2P snapshot broadcast sent to newly joined peer (${peerId || 'peer'})`);
+        }
+    });
+
+    const syncNowBtn = document.getElementById('p2pSyncNowBtn');
+    if (syncNowBtn) syncNowBtn.addEventListener('click', requestP2pSync);
+
+    const p2pErrorEl = document.getElementById('p2pErrorText');
+    TrysteroSync.onError((msg) => {
+        if (p2pErrorEl) {
+            p2pErrorEl.textContent = 'P2P note: ' + msg;
+            p2pErrorEl.style.display = 'block';
+        }
+        console.warn('[P2P]', msg);
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && masterKeyPassword) {
+            broadcastP2pSnapshot();
         }
     });
 
@@ -618,6 +840,8 @@ async function handleAuthSubmit(e) {
             vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
             masterKeyPassword = pass;
             sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+            normalizeVault();
+            await loadTombstones();
             logDebug(`Vault unlocked with password. Loaded ${vaultData.length} accounts.`);
             showDashboard();
             return;
@@ -634,6 +858,8 @@ async function handleAuthSubmit(e) {
                     vaultData = await CryptoVault.decrypt(encryptedPayload, storedRecKey);
                     masterKeyPassword = storedRecKey;
                     sessionStorage.setItem(SESSION_CACHE_KEY, storedRecKey);
+                    normalizeVault();
+                    await loadTombstones();
                     logDebug(`Vault unlocked via Emergency Recovery Key!`);
                     showDashboard();
                     return;
@@ -647,32 +873,11 @@ async function handleAuthSubmit(e) {
 
 async function saveVault() {
     if (!masterKeyPassword) return;
-    
-    const encryptedPayload = await CryptoVault.encrypt(vaultData, masterKeyPassword);
-    const serializedPayload = JSON.stringify(encryptedPayload);
-    
-    // Save to primary localStorage AND persistent IndexedDB
-    localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
-    await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
 
-    let storedRecKey = localStorage.getItem(RECOVERY_KEY_STORAGE);
-    if (!storedRecKey) storedRecKey = await loadFromIndexedDB(RECOVERY_KEY_STORAGE);
-
-    if (storedRecKey) {
-        const backupEncryptedPayload = await CryptoVault.encrypt(vaultData, storedRecKey);
-        const serializedBackup = JSON.stringify(backupEncryptedPayload);
-        localStorage.setItem(BACKUP_AUTOSAVE_KEY, serializedBackup);
-        await saveToIndexedDB(BACKUP_AUTOSAVE_KEY, serializedBackup);
-    }
-
-    logDebug(`Saved vault & auto backups to localStorage & IndexedDB. Total accounts: ${vaultData.length}`);
-
-    if (window.FileSync && FileSync.hasFile()) {
-        await syncWithLinkedFile();
-    }
+    await persistVaultLocal();
 
     if (window.TrysteroSync && TrysteroSync.isConnected()) {
-        TrysteroSync.broadcast(serializedPayload);
+        await broadcastP2pDelta();
     }
 }
 
@@ -838,12 +1043,21 @@ function toggleSecretReveal() {
 }
 
 async function deleteCurrentDetailAccount() {
-    if (activeDetailAccountId && confirm('Are you sure you want to delete this account?')) {
-        vaultData = vaultData.filter(a => a.id !== activeDetailAccountId);
-        await saveVault();
-        toggleModal('detailModal', false);
-        buildAccountsDOM();
+    if (!activeDetailAccountId) return;
+    if (!confirm('Are you sure you want to delete this account?')) return;
+
+    const target = vaultData.find(a => a.id === activeDetailAccountId);
+    if (target) {
+        const delTs = Date.now();
+        tombstoneMap.set(target.secret, { secret: target.secret, updatedAt: delTs });
+        markAccountDeleted(target.secret, delTs);
     }
+
+    vaultData = vaultData.filter(a => a.id !== activeDetailAccountId);
+    await saveVault();
+    await persistTombstones();
+    toggleModal('detailModal', false);
+    buildAccountsDOM();
 }
 
 function renderAccountsListOnly() {
@@ -1007,8 +1221,10 @@ async function saveNewAccount(acc) {
             period: acc.period || 30,
             digits: acc.digits || 6,
             algorithm: acc.algorithm || 'SHA1',
-            type: acc.type || 'TOTP'
+            type: acc.type || 'TOTP',
+            updatedAt: Date.now()
         };
+        markAccountChanged(vaultData[existingIndex]);
     } else {
         logDebug(`Adding new account: "${cleanIssuer} (${cleanAccount})"`);
         const newAccount = {
@@ -1019,9 +1235,11 @@ async function saveNewAccount(acc) {
             period: acc.period || 30,
             digits: acc.digits || 6,
             algorithm: acc.algorithm || 'SHA1',
-            type: acc.type || 'TOTP'
+            type: acc.type || 'TOTP',
+            updatedAt: Date.now()
         };
         vaultData.push(newAccount);
+        markAccountChanged(newAccount);
     }
     await saveVault();
     return true;
@@ -1253,31 +1471,39 @@ function exportVaultFile() {
 }
 
 async function handleImportVaultFile() {
+    console.log('[IMPORT] handleImportVaultFile fired');
     if (!masterKeyPassword) {
         alert('Please unlock your vault first.');
         return;
     }
     const fileInput = document.getElementById('importJsonFileInput');
-    if (!fileInput.files || !fileInput.files.length) return;
+    if (!fileInput.files || !fileInput.files.length) {
+        console.warn('[IMPORT] no file selected');
+        return;
+    }
 
     const file = fileInput.files[0];
+    console.log('[IMPORT] file:', JSON.stringify({ name: file.name, size: file.size, type: file.type }));
     const reader = new FileReader();
     reader.onload = async function (e) {
         try {
             let rawText = e.target.result.trim();
+            console.log('[IMPORT] read', rawText.length, 'chars; head:', JSON.stringify(rawText.slice(0, 120)));
             let parsed = null;
 
             try {
                 parsed = JSON.parse(rawText);
+                console.log('[IMPORT] parsed top-level:', Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed), parsed && typeof parsed === 'object' ? 'keys=' + Object.keys(parsed).join(',') : '');
             } catch (err) {
                 // Not JSON, check if it's an otpauth / otpauth-migration string file
+                console.log('[IMPORT] not JSON at top level:', err.message);
                 if (rawText.startsWith('otpauth') || rawText.startsWith('webauth')) {
                     await parseAndAddQrPayload(rawText);
                     fileInput.value = '';
                     return;
                 }
             }
-            
+
             // Loop un-stringifying in case of multi-nested stringified JSON
             while (typeof parsed === 'string') {
                 try {
@@ -1291,31 +1517,43 @@ async function handleImportVaultFile() {
                         fileInput.value = '';
                         return;
                     } else {
+                        console.log('[IMPORT] stopping unstringify, still string:', JSON.stringify(parsed.slice(0, 120)));
                         break;
                     }
                 }
             }
+            console.log('[IMPORT] final parsed type:', Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed), parsed && typeof parsed === 'object' ? 'keys=' + Object.keys(parsed).join(',') : '');
 
             let decryptedData = null;
 
             if (parsed && typeof parsed === 'object') {
                 const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
+                console.log('[IMPORT] encObj:', encObj ? 'found (cipher=' + !!encObj.cipher + ', ciphertext=' + !!encObj.ciphertext + ', iv=' + !!encObj.iv + ', salt=' + !!encObj.salt + ')' : 'null');
                 if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
-                    decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
+                    try {
+                        decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
+                        console.log('[IMPORT] decrypted with master password OK, type:', Array.isArray(decryptedData) ? 'ARRAY(len=' + decryptedData.length + ')' : typeof decryptedData);
+                    } catch (decErr) {
+                        console.log('[IMPORT] decrypt with master password FAILED:', decErr.message);
+                    }
                 } else if (Array.isArray(parsed)) {
                     decryptedData = parsed;
+                    console.log('[IMPORT] plain array vault, no decryption needed, len=' + parsed.length);
                 }
             }
 
             if (decryptedData && Array.isArray(decryptedData)) {
                 let count = 0;
                 for (let acc of decryptedData) {
+                    console.log('[IMPORT] saving account:', JSON.stringify(acc && { issuer: acc.issuer, account: acc.account, secret: acc.secret, hasUpdatedAt: !!acc.updatedAt }));
                     await saveNewAccount(acc);
                     count++;
                 }
                 buildAccountsDOM();
                 alert(`Successfully imported ${count} account(s) from file!`);
+                console.log('[IMPORT] DONE, imported', count, 'accounts');
             } else {
+                console.warn('[IMPORT] decryptedData not usable:', decryptedData === null ? 'null' : typeof decryptedData);
                 alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
