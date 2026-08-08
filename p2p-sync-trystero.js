@@ -43,9 +43,9 @@ const ICE_SERVERS = [
 ];
 
 // Curated public WebSocket trackers for the torrent signaling strategy.
+// NOTE: tracker.btorrent.xyz was probed and removed (returning 502 / down).
 const TRACKER_URLS = [
     'wss://tracker.openwebtorrent.com',
-    'wss://tracker.btorrent.xyz',
     'wss://tracker.openwebtorrent.com:443/announce'
 ];
 

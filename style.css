@@ -635,6 +635,7 @@ input[type="number"]:focus {
 .toast-hide { opacity: 0; transform: translateY(8px); }
 .toast-success { border-color: rgba(16, 185, 129, 0.5); }
 .toast-error { border-color: rgba(239, 68, 68, 0.5); }
+.toast-warning { border-color: rgba(234, 179, 8, 0.55); }
 
 /* --- Light theme --- */
 html[data-theme="light"] {

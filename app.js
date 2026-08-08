@@ -968,6 +968,14 @@ function promptPeerApproval(deviceId, payload) {
         fingerprintEl.textContent = deviceId ? deviceId.slice(0, 8) : 'Unknown';
         promptBox.style.display = 'block';
     }
+    // SECURITY: Never leak the full device id in a toast. Surface the approval
+    // request even if the user isn't looking at the P2P modal, so incoming
+    // syncs don't sit silently "stuck" behind the approval gate.
+    toggleModal('p2pSyncModal', true);
+    if (typeof showToast === 'function') {
+        showToast('Incoming sync from unknown device (' + (deviceId ? deviceId.slice(0, 8) : '?') + ') — approve or ignore in the P2P Sync modal.', 'warning');
+    }
+    if (typeof updateP2pStatusUI === 'function') updateP2pStatusUI();
 }
 
 async function processIncomingP2pPayload(payload) {
@@ -1006,6 +1014,15 @@ function setupTrysteroListeners() {
             pendingPeerPayload = null;
         }
         pendingPeerDeviceId = null;
+    });
+
+    const ignoreBtn = document.getElementById('ignoreP2pPeerBtn');
+    if (ignoreBtn) ignoreBtn.addEventListener('click', () => {
+        const promptBox = document.getElementById('p2pPendingApprovals');
+        if (promptBox) promptBox.style.display = 'none';
+        pendingPeerDeviceId = null;
+        pendingPeerPayload = null;
+        updateP2pStatusUI();
     });
 
     const savePassBtn = document.getElementById('saveP2pCustomPassBtn');
