@@ -1,11 +1,32 @@
 /**
  * Real-Time WebRTC P2P Sync Engine powered by Trystero (Torrent strategy)
  * Direct browser-to-browser encrypted vault synchronization.
+ *
+ * SECURITY — Pairing Protocol v2:
+ *   - Room discovery uses a RANDOM pairing credential (64 hex chars / 256 bits),
+ *     NEVER the master password.
+ *   - The pairing credential is generated with crypto.getRandomValues().
+ *   - QR pairing encodes only the random credential, never the master password.
+ *   - Vault sync payloads are encrypted with the master password using
+ *     AES-256-GCM before leaving the browser.
+ *   - TURN/signaling infrastructure is untrusted — it only sees encrypted
+ *     ciphertext and cannot decrypt vault contents.
+ *   - Device IDs (localStorage) are NOT cryptographic authentication. They are
+ *     used for UX (peer approval prompts) only. A malicious peer on the same
+ *     room cannot read vault data without the master password.
+ *
+ * SECURITY — TURN Trust Model:
+ *   The default TURN credentials (openrelayproject) are PUBLIC, shared
+ *   credentials for a free relay service. They are NOT private secrets.
+ *   All vault data transiting TURN is AES-256-GCM encrypted end-to-end.
  */
 
 const STORAGE_KEY_ROOM = 'webauth_trystero_room';
 const STORAGE_KEY_ACTIVE = 'webauth_trystero_active';
 
+// SECURITY: These are PUBLIC shared credentials for a free TURN relay,
+// not private secrets. All vault data is encrypted end-to-end (AES-256-GCM)
+// before reaching any relay infrastructure.
 const ICE_SERVERS = [
     { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
@@ -37,11 +58,12 @@ const NOSTR_RELAY_URLS = [
     'wss://relay.primal.net'
 ];
 
-// Multiple signaling strategies joined simultaneously. Peers only need ONE shared
-// strategy to reach each other, so a blocked tracker or relay no longer kills sync.
-// NOTE: Trystero's getRelays reads the `relayUrls` config key for ALL strategies,
-// including torrent (the docs' "trackerUrls" is ignored).
-// CDN: esm.sh is unreachable on some networks — use jsDelivr's +esm bundles instead.
+// SECURITY: Trystero is loaded from a CDN because it is an ESM module with
+// complex internal dependency chains (WebRTC, signaling) that cannot be
+// trivially vendored as a single file. Version is pinned to 0.19.0.
+// The vault data sent through Trystero is always AES-256-GCM encrypted
+// with the master password before transmission, so Trystero itself never
+// has access to plaintext vault contents.
 const STRATEGY_MODULES = [
     { label: 'torrent', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/torrent.js/+esm', opts: { relayUrls: TRACKER_URLS } },
     { label: 'nostr', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/nostr.js/+esm', opts: { relayUrls: NOSTR_RELAY_URLS } }
@@ -66,7 +88,7 @@ let backoffUntil = 0;
 let backoffReason = null;
 let backoffRetryTimer = null;
 let backoffAttempt = 0;
-let lastJoinPass = null;
+let lastJoinCredential = null;
 const FAILURE_THRESHOLD = 5;
 const BACKOFF_BASE_MS = 30 * 1000;
 const BACKOFF_MAX_MS = 5 * 60 * 1000;
@@ -89,7 +111,6 @@ function scheduleBackoff() {
     try { leave(); } catch (e) {}
 
     backoffReason = 'WebRTC appears blocked on this network — retrying automatically in ' + Math.round(delay / 1000) + 's.';
-    console.warn('[P2P] ' + backoffReason);
     errorCallbacks.forEach(cb => {
         try { cb(backoffReason); } catch (e) {}
     });
@@ -98,8 +119,8 @@ function scheduleBackoff() {
     backoffRetryTimer = setTimeout(() => {
         backoffRetryTimer = null;
         backoffAttempt = 0;
-        if (lastJoinPass) {
-            join(lastJoinPass).catch(() => {});
+        if (lastJoinCredential) {
+            join().catch(() => {});
         }
     }, delay);
 }
@@ -143,11 +164,24 @@ if (typeof window !== 'undefined') {
     });
 }
 
-const ROOM_ID_SALT = 'webauth-vault-trystero-room-v1';
+const ROOM_ID_SALT = 'webauth-vault-trystero-room-v2';
+
+/**
+ * SECURITY: Generate a cryptographically random pairing credential.
+ * 32 bytes (256 bits) encoded as hex. Used for room discovery — the master
+ * password is NEVER used for room ID derivation.
+ */
+function generatePairingCredential() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 function getDeviceId() {
     let id = localStorage.getItem('webauth_device_id');
     if (!id || typeof id !== 'string' || id.length < 8) {
+        // SECURITY: Device IDs use CSPRNG but are NOT cryptographic
+        // authentication. They are used for UX (peer approval prompts) only.
         const randomBuffer = new Uint8Array(8);
         crypto.getRandomValues(randomBuffer);
         id = Array.from(randomBuffer).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -182,7 +216,7 @@ const STORAGE_KEY_CUSTOM_PASS = 'webauth_trystero_custom_pass';
 const STORAGE_KEY_TURN = 'webauth_turn_servers';
 
 // Custom TURN relays entered in the P2P modal. Free/public TURN is unreliable
-// and the college network blocks UDP, so allow the user to supply their own
+// and some networks block UDP, so allow the user to supply their own
 // relay (e.g. a self-hosted coturn on a VPS) to punch through restrictive NATs.
 function getTurnServers() {
     try {
@@ -217,16 +251,25 @@ function getWeekNumber(daysOffset = 0) {
     return Math.floor(timestamp / (7 * 24 * 60 * 60 * 1000));
 }
 
-async function deriveRoomId(passphrase, daysOffset = 0) {
-    if (!passphrase) return null;
+/**
+ * SECURITY: Derive room ID from the random pairing credential, NOT from the
+ * master password. The credential is a 256-bit random value, so SHA-256 hashing
+ * does not enable password guessing (there is no password to guess).
+ */
+async function deriveRoomId(credential, daysOffset = 0) {
+    if (!credential) return null;
     const weekNum = getWeekNumber(daysOffset);
     const enc = new TextEncoder();
-    const data = enc.encode(passphrase + ROOM_ID_SALT + '-week-' + weekNum);
+    const data = enc.encode(credential + ROOM_ID_SALT + '-week-' + weekNum);
     const hashBuffer = await crypto.subtle.digest('SHA-256', data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Get the stored pairing credential (encrypted at rest via SecretStore).
+ * This is the random pairing secret, NEVER the master password.
+ */
 async function getCustomPassphrase() {
     const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_PASS) || '';
     if (!raw) return '';
@@ -242,7 +285,6 @@ async function getCustomPassphrase() {
             }
             return value || '';
         } catch (e) {
-            console.warn('[P2P] failed to decrypt stored passphrase:', e);
             return '';
         }
     }
@@ -255,9 +297,7 @@ async function setCustomPassphrase(pass) {
         if (window.SecretStore) {
             try {
                 stored = await SecretStore.seal(stored);
-            } catch (e) {
-                console.warn('[P2P] failed to encrypt passphrase, storing raw:', e);
-            }
+            } catch (e) {}
         }
         localStorage.setItem(STORAGE_KEY_CUSTOM_PASS, stored);
     } else {
@@ -273,10 +313,7 @@ async function migrateLegacyCustomPassphrase() {
     if (!window.SecretStore) return;
     try {
         await setCustomPassphrase(raw);
-        console.warn('[P2P] migrated legacy plaintext custom passphrase to encrypted storage');
-    } catch (e) {
-        console.warn('[P2P] custom passphrase migration failed:', e);
-    }
+    } catch (e) {}
 }
 if (typeof window !== 'undefined') {
     window.addEventListener('DOMContentLoaded', () => {
@@ -302,11 +339,14 @@ let activeRooms = [];
 let allPeers = new Set();
 let strategyStatus = [];
 
-function makeRtcOpts(strategyOpts, password) {
+function makeRtcOpts(strategyOpts, credential) {
     const iceServers = getIceServers();
     return {
         appId: 'webauth-vault-sync',
-        password: password,
+        // SECURITY: 'password' is Trystero's room namespace filter, NOT an
+        // encryption key. It is the random pairing credential, never the
+        // master password.
+        password: credential,
         rtcConfig: { iceServers },
         config: { iceServers },
         iceServers,
@@ -349,13 +389,24 @@ const handleIncomingVaultMessage = (rawMessage, peerId) => {
     });
 };
 
-async function join(passphraseOverride) {
-    const effectivePass = passphraseOverride || await getCustomPassphrase();
-    if (!effectivePass) return false;
+/**
+ * Join P2P sync rooms using the stored pairing credential.
+ *
+ * SECURITY: If no credential exists, one is auto-generated with CSPRNG.
+ * The master password is NEVER used for room discovery or as a Trystero
+ * room password.
+ */
+async function join() {
+    let credential = await getCustomPassphrase();
+    if (!credential) {
+        // SECURITY: Auto-generate a random pairing credential on first use.
+        credential = generatePairingCredential();
+        await setCustomPassphrase(credential);
+    }
 
-    lastJoinPass = effectivePass;
-    const roomIdCurrent = await deriveRoomId(effectivePass, 0);
-    const roomIdPrev = await deriveRoomId(effectivePass, -7);
+    lastJoinCredential = credential;
+    const roomIdCurrent = await deriveRoomId(credential, 0);
+    const roomIdPrev = await deriveRoomId(credential, -7);
     if (!roomIdCurrent) return false;
 
     if (isJoined && activeRooms.length > 0) {
@@ -368,7 +419,7 @@ async function join(passphraseOverride) {
     for (const strat of STRATEGY_MODULES) {
         try {
             const { joinRoom } = await import(strat.module);
-            const room = joinRoom(makeRtcOpts(strat.opts, effectivePass), roomIdCurrent);
+            const room = joinRoom(makeRtcOpts(strat.opts, credential), roomIdCurrent);
             wireRoom(room);
             activeRooms.push({ room, label: strat.label });
             strategyStatus.push(strat.label + ': joined');
@@ -376,14 +427,11 @@ async function join(passphraseOverride) {
 
             // Overlap secondary room for previous week
             try {
-                const secRoom = joinRoom(makeRtcOpts(strat.opts, effectivePass), roomIdPrev);
+                const secRoom = joinRoom(makeRtcOpts(strat.opts, credential), roomIdPrev);
                 wireRoom(secRoom);
                 activeRooms.push({ room: secRoom, label: strat.label + '-prev' });
-            } catch (secErr) {
-                console.warn(strat.label + ' secondary room join warning:', secErr);
-            }
+            } catch (secErr) {}
         } catch (err) {
-            console.warn('Trystero strategy "' + strat.label + '" failed to initialize:', err);
             strategyStatus.push(strat.label + ': failed (' + (err && err.message || err) + ')');
             notifyError('P2P signaling unavailable via ' + strat.label + (err && err.message ? ' (' + err.message + ')' : ''));
         }
@@ -415,9 +463,7 @@ function broadcast(serializedPayload) {
                 room.__sendVault(serialized);
                 any = true;
             }
-        } catch (err) {
-            console.error('Trystero broadcast error:', err);
-        }
+        } catch (err) {}
     }
     return any;
 }
@@ -489,6 +535,7 @@ window.TrysteroSync = {
     isPeerApproved,
     getCustomPassphrase,
     setCustomPassphrase,
+    generatePairingCredential,
     migrateLegacyCustomPassphrase,
     getTurnServers,
     setTurnServers,

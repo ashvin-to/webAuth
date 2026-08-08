@@ -99,8 +99,14 @@ async function removeFromIndexedDB(key) {
     }
 }
 
+// SECURITY: Debug logging is restricted. Never log secrets, passwords,
+// recovery keys, or decrypted vault data.
 function logDebug(msg) {
-    console.log("[DEBUG]", msg);
+    // In production, debug logging should be disabled entirely.
+    // This function is kept for non-sensitive operational messages only.
+    if (typeof console !== 'undefined' && console.log) {
+        console.log('[WebAuth]', msg);
+    }
 }
 
 // --- Global error trap: surfaces runtime errors visibly for diagnosis ---
@@ -232,7 +238,7 @@ async function mergeRemoteAccounts(remoteAccounts, remoteDeletes) {
         await persistTombstones();
         await persistVaultLocal();
         buildAccountsDOM();
-        logDebug(`Sync merge applied: ${vaultData.length} account(s) after merge.`);
+        logDebug('Sync merge applied: ' + vaultData.length + ' account(s) after merge.');
     }
     return changed;
 }
@@ -260,19 +266,17 @@ async function persistVaultLocal() {
         await syncWithLinkedFile();
     }
 
-    logDebug(`Vault persisted locally. Total accounts: ${vaultData.length}`);
+    logDebug('Vault persisted locally. Total accounts: ' + vaultData.length);
 }
 
 // Broadcast a full encrypted snapshot of the entire vault + tombstones.
 async function broadcastP2pSnapshot() {
     if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) {
-        console.log('[P2P] snapshot skipped (not connected / no key)');
         return;
     }
     const message = { full: true, accounts: vaultData, deletes: Array.from(tombstoneMap.values()) };
     const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
     const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
-    console.log('[P2P] snapshot broadcast:', ok ? 'OK' : 'FAILED', '(accounts=' + vaultData.length + ', deletes=' + tombstoneMap.size + ')');
     if (ok) lastSyncAt = Date.now();
     return ok;
 }
@@ -288,7 +292,6 @@ async function broadcastP2pDelta() {
     };
     const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
     const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
-    console.log('[P2P] delta broadcast:', ok ? 'OK' : 'FAILED', '(upserts=' + pendingSyncChanges.upserts.size + ', deletes=' + pendingSyncChanges.deletes.size + ')');
     if (ok) {
         pendingSyncChanges.upserts.clear();
         pendingSyncChanges.deletes.clear();
@@ -434,12 +437,30 @@ async function initAuthScreen() {
     }
 }
 
+/**
+ * SECURITY: Recovery key generation uses crypto.getRandomValues() (CSPRNG).
+ * The alphabet has 31 characters, and rejection sampling avoids modulo bias.
+ * 16 characters from a 31-char alphabet = ~79 bits of entropy.
+ */
 function generateRandomRecoveryKey() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const maxUnbiased = 256 - (256 % chars.length); // reject values >= this to avoid modulo bias
     let key = 'RECOVER-';
+    const randomBytes = new Uint8Array(64); // over-provision to handle rejections
+    crypto.getRandomValues(randomBytes);
+    let byteIdx = 0;
     for (let i = 0; i < 16; i++) {
         if (i > 0 && i % 4 === 0) key += '-';
-        key += chars.charAt(Math.floor(Math.random() * chars.length));
+        // Rejection sampling: skip bytes that would introduce modulo bias
+        let val;
+        do {
+            if (byteIdx >= randomBytes.length) {
+                crypto.getRandomValues(randomBytes);
+                byteIdx = 0;
+            }
+            val = randomBytes[byteIdx++];
+        } while (val >= maxUnbiased);
+        key += chars.charAt(val % chars.length);
     }
     return key;
 }
@@ -797,12 +818,12 @@ async function handleChangePasswordSubmit(e) {
         await saveVault();
         await persistTombstones();
 
-        // Re-join P2P room with new password hash if active
+        // Re-join P2P room if active. SECURITY: join() uses the stored random
+        // pairing credential, not the master password.
         if (window.TrysteroSync && TrysteroSync.isActive()) {
             TrysteroSync.leave();
             setupTrysteroListeners();
-            const customPass = await TrysteroSync.getCustomPassphrase();
-            const joined = await TrysteroSync.join(customPass || masterKeyPassword);
+            const joined = await TrysteroSync.join();
             if (joined) {
                 await broadcastP2pSnapshot();
             }
@@ -865,33 +886,42 @@ function handleSaveTurnServer() {
         showToast('TURN relay saved — rejoin P2P to apply.', 'success');
     }
     populateTurnServerForm();
+    // SECURITY: Rejoin with stored credential, not master password.
     if (TrysteroSync.isActive()) {
         TrysteroSync.leave();
         setupTrysteroListeners();
-        TrysteroSync.getCustomPassphrase().then(custom => {
-            TrysteroSync.join(custom || masterKeyPassword).then(() => updateP2pStatusUI());
-        });
+        TrysteroSync.join().then(() => updateP2pStatusUI());
     }
 }
 
+/**
+ * SECURITY: QR pairing encodes a random pairing credential, NEVER the master
+ * password. The credential is auto-generated if one doesn't exist.
+ */
 async function showP2pPairingQr() {
     const qrBox = document.getElementById('p2pPairingQr');
     const hintEl = document.getElementById('p2pPairingHint');
-    if (!qrBox || !window.TrysteroSync || !masterKeyPassword) return;
-    const customPass = await TrysteroSync.getCustomPassphrase();
-    const pass = customPass || masterKeyPassword;
-    const isCustom = !!customPass;
+    if (!qrBox || !window.TrysteroSync) return;
+
     if (qrBox.style.display !== 'none' && qrBox.dataset.rendered === 'yes') {
         qrBox.style.display = 'none';
         return;
     }
+
+    // Ensure a random pairing credential exists
+    let credential = await TrysteroSync.getCustomPassphrase();
+    if (!credential) {
+        credential = TrysteroSync.generatePairingCredential();
+        await TrysteroSync.setCustomPassphrase(credential);
+    }
+
     qrBox.style.display = 'flex';
-    SVGQRCode.renderInto(qrBox, 'webauth-pair:' + pass, 190);
+    // SECURITY: QR contains only 'webauth-pair:v2:<random_credential>'
+    // The master password is never included.
+    SVGQRCode.renderInto(qrBox, 'webauth-pair:v2:' + credential, 190);
     qrBox.dataset.rendered = 'yes';
     if (hintEl) {
-        hintEl.textContent = isCustom
-            ? 'This QR encodes your custom sync passphrase. Scan it on the new device to pair instantly.'
-            : 'This QR encodes your master password as the sync passphrase. Scan it on the new device to pair instantly.';
+        hintEl.textContent = 'Scan this QR on the new device to pair. The QR contains a random sync credential — your master password is never shared.';
     }
 }
 
@@ -908,19 +938,16 @@ function scanP2pPairingQr() {
 async function handleJoinP2pSync() {
     if (!window.TrysteroSync) {
         showToast('P2P Sync module is unavailable.', 'error');
-        console.warn('[P2P] window.TrysteroSync is undefined — p2p-sync-trystero.js may have failed to load.');
         return;
     }
     if (!masterKeyPassword) return;
     setupTrysteroListeners();
-    const customPass = await TrysteroSync.getCustomPassphrase();
-    console.log('[P2P] attempting join, customPass set:', !!customPass, 'connected:', TrysteroSync.isConnected());
-    const joined = await TrysteroSync.join(customPass || masterKeyPassword);
-    console.log('[P2P] join result:', joined, 'peerCount:', TrysteroSync.getPeerCount());
+    // SECURITY: join() uses the stored random pairing credential (auto-generated
+    // if none exists). The master password is NEVER passed to join().
+    const joined = await TrysteroSync.join();
     updateP2pStatusUI();
     if (joined) {
         await broadcastP2pSnapshot();
-        console.log('[P2P] snapshot broadcast attempted after join');
     }
 }
 
@@ -948,7 +975,6 @@ async function processIncomingP2pPayload(payload) {
     try {
         const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
         const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
-        console.log('[P2P] received payload decrypted:', Array.isArray(decryptedData) ? 'legacy-array' : (decryptedData && decryptedData.request ? 'request' : 'snapshot/delta'));
         if (Array.isArray(decryptedData)) {
             // Legacy format: plain full vault array
             await mergeRemoteAccounts(decryptedData, []);
@@ -987,20 +1013,23 @@ function setupTrysteroListeners() {
         if (!window.TrysteroSync) return;
         const passInput = document.getElementById('p2pCustomPassphraseInput');
         const passVal = passInput ? passInput.value.trim() : '';
-        await TrysteroSync.setCustomPassphrase(passVal);
+        // SECURITY: If user clears the field, auto-generate a random credential
+        // instead of falling back to the master password.
+        const credential = passVal || TrysteroSync.generatePairingCredential();
+        await TrysteroSync.setCustomPassphrase(credential);
         if (TrysteroSync.isActive()) {
             TrysteroSync.leave();
-            const joined = await TrysteroSync.join(passVal || masterKeyPassword);
+            const joined = await TrysteroSync.join();
             updateP2pStatusUI();
             if (joined) {
                 await broadcastP2pSnapshot();
             }
         }
-        showToast(passVal ? 'Custom P2P sync passphrase saved!' : 'Custom P2P sync passphrase cleared (reverted to master password).', 'success');
+        showToast(passVal ? 'Sync credential saved — devices will re-pair.' : 'New random sync credential generated — re-pair devices.', 'success');
     });
 
     TrysteroSync.onPeerChange(async (peerCount, peerId, action) => {
-        console.log('[P2P] peer change:', action, 'peerId:', peerId, 'total:', peerCount);
+        // SECURITY: Do not log peer IDs to avoid leaking device identifiers.
         updateP2pStatusUI();
         if (action === 'join' && masterKeyPassword) {
             await broadcastP2pSnapshot();
@@ -1150,9 +1179,10 @@ async function showDashboard() {
         }
     }
 
+    // SECURITY: Auto-rejoin P2P with stored random credential, not master password.
     if (window.TrysteroSync && TrysteroSync.isActive() && masterKeyPassword) {
         setupTrysteroListeners();
-        await TrysteroSync.join(masterKeyPassword);
+        await TrysteroSync.join();
     }
 }
 
@@ -1423,21 +1453,25 @@ function renderAccountsListOnly() {
 
 const STEAM_ALPHABET = '23456789BCDFGHJKMNPQRTVWXY';
 
-function generateSteamCode(secret, epoch) {
+/**
+ * SECURITY: Steam TOTP now uses Web Crypto HMAC-SHA1 instead of CryptoJS.
+ * This is async (returns a Promise) because Web Crypto sign() is async.
+ */
+async function generateSteamCode(secret, epoch) {
     const counter = Math.floor(epoch / 30);
-    const counterBytes = new Array(8).fill(0);
-    let val = counter;
-    for (let i = 7; i >= 0; i--) {
-        counterBytes[i] = val & 0xff;
-        val = Math.floor(val / 256);
-    }
-    const keyWA = CryptoJS.lib.WordArray.create(base32DecodeString(secret));
-    const counterWA = CryptoJS.lib.WordArray.create(new Uint8Array(counterBytes));
-    const hmac = CryptoJS.HmacSHA1(counterWA, keyWA);
-    const hmacBytes = new Uint8Array(hmac.sigBytes);
-    for (let i = 0; i < hmac.sigBytes; i++) {
-        hmacBytes[i] = (hmac.words[i >> 2] >>> (24 - (i % 4) * 8)) & 0xff;
-    }
+    const counterBuffer = new ArrayBuffer(8);
+    const counterView = new DataView(counterBuffer);
+    // HMAC-SHA1 counter is big-endian 64-bit; high 32 bits are always 0 for
+    // realistic counter values.
+    counterView.setUint32(4, counter, false);
+
+    const keyBytes = base32DecodeString(secret);
+    const cryptoKey = await crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+    );
+    const hmacBuffer = await crypto.subtle.sign('HMAC', cryptoKey, counterBuffer);
+    const hmacBytes = new Uint8Array(hmacBuffer);
+
     const offset = hmacBytes[19] & 0x0f;
     let full = ((hmacBytes[offset] & 0x7f) << 24) |
                ((hmacBytes[offset + 1] & 0xff) << 16) |
@@ -1461,77 +1495,78 @@ function accountType(acc) {
     return (acc.type || 'TOTP').toUpperCase();
 }
 
-function updateTotpCodes() {
+async function updateTotpCodes() {
     const epoch = Math.floor(Date.now() / 1000);
-    vaultData.forEach(acc => {
-        const codeEl = document.getElementById(`code-${acc.id}`);
-        const timerEl = document.getElementById(`timer-${acc.id}`);
-        const nextEl = document.getElementById(`next-${acc.id}`);
-        const progressEl = document.getElementById(`fill-${acc.id}`);
-        if (!codeEl || !timerEl) return;
+    for (const acc of vaultData) {
+        const codeEl = document.getElementById('code-' + acc.id);
+        const timerEl = document.getElementById('timer-' + acc.id);
+        const nextEl = document.getElementById('next-' + acc.id);
+        const progressEl = document.getElementById('fill-' + acc.id);
+        if (!codeEl || !timerEl) continue;
 
-            try {
-                const cleanSecret = acc.secret.replace(/\s+/g, '');
-                if (!cleanSecret || cleanSecret.length < 16 || cleanSecret.length > 64) {
-                    throw new Error('Invalid secret length');
-                }
-
-                const type = accountType(acc);
-                const period = acc.period || 30;
-                let tokenCode;
-                let remaining = null;
-
-                if (type === 'STEAM') {
-                    tokenCode = generateSteamCode(cleanSecret, epoch);
-                    remaining = period - (epoch % period);
-                } else if (type === 'HOTP') {
-                    const hotp = new OTPAuth.HOTP({
-                        issuer: acc.issuer || 'Service',
-                        label: acc.account || 'Account',
-                        algorithm: acc.algorithm || "SHA1",
-                        digits: acc.digits || 6,
-                        counter: acc.counter || 0,
-                        secret: OTPAuth.Secret.fromBase32(cleanSecret)
-                    });
-                    tokenCode = hotp.generate();
-                } else {
-                    const totp = new OTPAuth.TOTP({
-                        issuer: acc.issuer || 'Service',
-                        label: acc.account || 'Account',
-                        algorithm: acc.algorithm || "SHA1",
-                        digits: acc.digits || 6,
-                        period: period,
-                        secret: OTPAuth.Secret.fromBase32(cleanSecret)
-                    });
-                    tokenCode = totp.generate();
-                    remaining = period - (epoch % period);
-                }
-
-                if (type === 'STEAM') {
-                    codeEl.textContent = tokenCode;
-                } else {
-                    codeEl.textContent = tokenCode.length > 6 ? tokenCode : `${tokenCode.slice(0, 3)} ${tokenCode.slice(3)}`;
-                }
-                codeEl.setAttribute('data-fullcode', tokenCode);
-
-                if (type === 'HOTP') {
-                    timerEl.textContent = `C${acc.counter || 0}`;
-                    if (nextEl) nextEl.style.display = 'inline-flex';
-                    if (progressEl) progressEl.style.width = '0%';
-                } else {
-                    timerEl.textContent = `${remaining}s`;
-                    if (nextEl) nextEl.style.display = 'none';
-                    if (progressEl) {
-                        progressEl.style.width = ((remaining / period) * 100) + '%';
-                        progressEl.style.background = remaining <= 5 ? 'var(--danger-color)' : remaining <= 10 ? 'var(--accent-cyan)' : 'var(--success-color)';
-                    }
-                }
-            } catch (e) {
-                codeEl.textContent = 'INVALID';
-                timerEl.textContent = '--s';
-                console.debug(`TOTP error for ${acc.issuer || 'Unknown'} (${acc.account || 'Unknown'}):`, e.message);
+        try {
+            const cleanSecret = acc.secret.replace(/\s+/g, '');
+            if (!cleanSecret || cleanSecret.length < 16 || cleanSecret.length > 64) {
+                throw new Error('Invalid secret length');
             }
-    });
+
+            const type = accountType(acc);
+            const period = acc.period || 30;
+            let tokenCode;
+            let remaining = null;
+
+            if (type === 'STEAM') {
+                // SECURITY: Steam HMAC now uses Web Crypto (async)
+                tokenCode = await generateSteamCode(cleanSecret, epoch);
+                remaining = period - (epoch % period);
+            } else if (type === 'HOTP') {
+                const hotp = new OTPAuth.HOTP({
+                    issuer: acc.issuer || 'Service',
+                    label: acc.account || 'Account',
+                    algorithm: acc.algorithm || 'SHA1',
+                    digits: acc.digits || 6,
+                    counter: acc.counter || 0,
+                    secret: OTPAuth.Secret.fromBase32(cleanSecret)
+                });
+                tokenCode = hotp.generate();
+            } else {
+                const totp = new OTPAuth.TOTP({
+                    issuer: acc.issuer || 'Service',
+                    label: acc.account || 'Account',
+                    algorithm: acc.algorithm || 'SHA1',
+                    digits: acc.digits || 6,
+                    period: period,
+                    secret: OTPAuth.Secret.fromBase32(cleanSecret)
+                });
+                tokenCode = totp.generate();
+                remaining = period - (epoch % period);
+            }
+
+            if (type === 'STEAM') {
+                codeEl.textContent = tokenCode;
+            } else {
+                codeEl.textContent = tokenCode.length > 6 ? tokenCode : tokenCode.slice(0, 3) + ' ' + tokenCode.slice(3);
+            }
+            codeEl.setAttribute('data-fullcode', tokenCode);
+
+            if (type === 'HOTP') {
+                timerEl.textContent = 'C' + (acc.counter || 0);
+                if (nextEl) nextEl.style.display = 'inline-flex';
+                if (progressEl) progressEl.style.width = '0%';
+            } else {
+                timerEl.textContent = remaining + 's';
+                if (nextEl) nextEl.style.display = 'none';
+                if (progressEl) {
+                    progressEl.style.width = ((remaining / period) * 100) + '%';
+                    progressEl.style.background = remaining <= 5 ? 'var(--danger-color)' : remaining <= 10 ? 'var(--accent-cyan)' : 'var(--success-color)';
+                }
+            }
+        } catch (e) {
+            codeEl.textContent = 'INVALID';
+            timerEl.textContent = '--s';
+            // SECURITY: Do not log the secret or full error in production.
+        }
+    }
 }
 
 function advanceHotpCounter(event, id) {
@@ -1647,9 +1682,25 @@ async function handleAddAccount(e) {
 }
 
 async function saveNewAccount(acc) {
+    // SECURITY: Treat imported data as untrusted. Validate and sanitize.
+    if (!acc || typeof acc !== 'object') return false;
+    // Prototype pollution guard: reject objects with dangerous keys.
+    if ('__proto__' in acc || 'constructor' in acc && typeof acc.constructor !== 'function' || 'prototype' in acc) {
+        logDebug('[IMPORT] rejected object with suspicious prototype keys');
+        return false;
+    }
+    if (typeof acc.secret !== 'string' || !acc.secret.trim()) {
+        logDebug('[IMPORT] rejected account with missing/invalid secret');
+        return false;
+    }
+    if (acc.secret.length > 500) {
+        logDebug('[IMPORT] rejected account with oversized secret');
+        return false;
+    }
     const cleanSecret = acc.secret.toUpperCase().replace(/\s+/g, '');
-    const cleanIssuer = (acc.issuer || 'Service').trim();
-    const cleanAccount = (acc.account || 'Account').trim();
+    // Truncate issuer/account to prevent oversized DOM injection.
+    const cleanIssuer = (typeof acc.issuer === 'string' ? acc.issuer : 'Service').trim().slice(0, 200);
+    const cleanAccount = (typeof acc.account === 'string' ? acc.account : 'Account').trim().slice(0, 200);
 
     const existingIndex = vaultData.findIndex(a => 
         a.secret === cleanSecret || 
@@ -1672,9 +1723,12 @@ async function saveNewAccount(acc) {
         };
         markAccountChanged(vaultData[existingIndex]);
     } else {
-        logDebug(`Adding new account: "${cleanIssuer} (${cleanAccount})"`);
+        logDebug('Adding new account: ' + cleanIssuer);
+        // SECURITY: Account IDs use CSPRNG instead of Math.random().
+        const idRandom = new Uint8Array(6);
+        crypto.getRandomValues(idRandom);
         const newAccount = {
-            id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+            id: Date.now().toString() + Array.from(idRandom).map(b => b.toString(36)).join('').slice(0, 4),
             issuer: cleanIssuer,
             account: cleanAccount,
             secret: cleanSecret,
@@ -1805,19 +1859,21 @@ function stopCameraScanner() {
 }
 
 async function parseAndAddQrPayload(payload) {
-    logDebug(`Parsing QR payload prefix: ${payload.substring(0, 30)}...`);
+    logDebug('Parsing QR payload...');
 
     let cleanPayload = payload.trim();
-    if (cleanPayload.startsWith('webauth-pair:')) {
-        const pass = cleanPayload.slice('webauth-pair:'.length);
+
+    // SECURITY: Handle v2 pairing protocol (random credential, no password)
+    if (cleanPayload.startsWith('webauth-pair:v2:')) {
+        const credential = cleanPayload.slice('webauth-pair:v2:'.length);
         if (!window.TrysteroSync) {
             showToast('P2P Sync module is unavailable.', 'error');
             return;
         }
-        if (pass) {
-            await TrysteroSync.setCustomPassphrase(pass);
+        if (credential && credential.length >= 32) {
+            await TrysteroSync.setCustomPassphrase(credential);
             setupTrysteroListeners();
-            const joined = await TrysteroSync.join(pass);
+            const joined = await TrysteroSync.join();
             updateP2pStatusUI();
             if (joined) {
                 await broadcastP2pSnapshot();
@@ -1825,6 +1881,30 @@ async function parseAndAddQrPayload(payload) {
             } else {
                 showToast('Pairing failed — could not join sync room', 'error');
             }
+        } else {
+            showToast('Invalid pairing QR — credential too short', 'error');
+        }
+        return;
+    }
+
+    // Legacy v1 pairing: treat the value as a sync credential (not as a
+    // password, since v1 QR may have contained the master password).
+    // SECURITY: Warn the user this is an old-format QR.
+    if (cleanPayload.startsWith('webauth-pair:')) {
+        const legacyCredential = cleanPayload.slice('webauth-pair:'.length);
+        if (!window.TrysteroSync) {
+            showToast('P2P Sync module is unavailable.', 'error');
+            return;
+        }
+        if (legacyCredential) {
+            // Generate a NEW random credential instead of using the legacy value
+            // (which may be the master password from a v1 QR).
+            const newCredential = TrysteroSync.generatePairingCredential();
+            await TrysteroSync.setCustomPassphrase(newCredential);
+            setupTrysteroListeners();
+            const joined = await TrysteroSync.join();
+            updateP2pStatusUI();
+            showToast('Old pairing QR detected — generated new secure credential. Re-pair the other device.', 'error');
         }
         return;
     }
@@ -2029,7 +2109,7 @@ function downloadMigrationUri() {
 }
 
 async function handleImportVaultFile() {
-    console.log('[IMPORT] handleImportVaultFile fired');
+    logDebug('[IMPORT] handleImportVaultFile fired');
     if (!masterKeyPassword) {
         alert('Please unlock your vault first.');
         return;
@@ -2041,20 +2121,21 @@ async function handleImportVaultFile() {
     }
 
     const file = fileInput.files[0];
-    console.log('[IMPORT] file:', JSON.stringify({ name: file.name, size: file.size, type: file.type }));
+    logDebug('[IMPORT] file: ' + file.name + ' (' + file.size + ' bytes)');
     const reader = new FileReader();
     reader.onload = async function (e) {
         try {
             let rawText = e.target.result.trim();
-            console.log('[IMPORT] read', rawText.length, 'chars; head:', JSON.stringify(rawText.slice(0, 120)));
+            // SECURITY: Do not log raw import content (may contain plaintext secrets).
+            logDebug('[IMPORT] read ' + rawText.length + ' chars');
             let parsed = null;
 
             try {
                 parsed = JSON.parse(rawText);
-                console.log('[IMPORT] parsed top-level:', Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed), parsed && typeof parsed === 'object' ? 'keys=' + Object.keys(parsed).join(',') : '');
+                logDebug('[IMPORT] parsed top-level: ' + (Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed)));
             } catch (err) {
                 // Not JSON, check if it's an otpauth / otpauth-migration string file
-                console.log('[IMPORT] not JSON at top level:', err.message);
+                logDebug('[IMPORT] not JSON at top level: ' + err.message);
                 if (rawText.startsWith('otpauth') || rawText.startsWith('webauth')) {
                     await parseAndAddQrPayload(rawText);
                     fileInput.value = '';
@@ -2075,47 +2156,47 @@ async function handleImportVaultFile() {
                         fileInput.value = '';
                         return;
                     } else {
-                        console.log('[IMPORT] stopping unstringify, still string:', JSON.stringify(parsed.slice(0, 120)));
+                        logDebug('[IMPORT] stopping unstringify, still string');
                         break;
                     }
                 }
             }
-            console.log('[IMPORT] final parsed type:', Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed), parsed && typeof parsed === 'object' ? 'keys=' + Object.keys(parsed).join(',') : '');
+            logDebug('[IMPORT] final parsed type: ' + (Array.isArray(parsed) ? 'ARRAY(len=' + parsed.length + ')' : (typeof parsed)));
 
             let decryptedData = null;
 
             if (parsed && typeof parsed === 'object') {
                 const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
-                console.log('[IMPORT] encObj:', encObj ? 'found (cipher=' + !!encObj.cipher + ', ciphertext=' + !!encObj.ciphertext + ', iv=' + !!encObj.iv + ', salt=' + !!encObj.salt + ')' : 'null');
+                logDebug('[IMPORT] encObj: ' + (encObj ? 'found' : 'null'));
                 if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
                     try {
                         decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
-                        console.log('[IMPORT] decrypted with master password OK, type:', Array.isArray(decryptedData) ? 'ARRAY(len=' + decryptedData.length + ')' : typeof decryptedData);
+                        logDebug('[IMPORT] decrypted OK, len=' + (Array.isArray(decryptedData) ? decryptedData.length : '?'));
                     } catch (decErr) {
-                        console.log('[IMPORT] decrypt with master password FAILED:', decErr.message);
+                        logDebug('[IMPORT] decrypt with master password FAILED');
                     }
                 } else if (Array.isArray(parsed)) {
                     decryptedData = parsed;
-                    console.log('[IMPORT] plain array vault, no decryption needed, len=' + parsed.length);
+                    logDebug('[IMPORT] plain array vault, len=' + parsed.length);
                 }
             }
 
             if (decryptedData && Array.isArray(decryptedData)) {
                 let count = 0;
                 for (let acc of decryptedData) {
-                    console.log('[IMPORT] saving account:', JSON.stringify(acc && { issuer: acc.issuer, account: acc.account, secret: acc.secret, hasUpdatedAt: !!acc.updatedAt }));
+                    // SECURITY: Never log secret/TOTP keys. Only safe metadata.
                     await saveNewAccount(acc);
                     count++;
                 }
                 buildAccountsDOM();
                 alert(`Successfully imported ${count} account(s) from file!`);
-                console.log('[IMPORT] DONE, imported', count, 'accounts');
+                logDebug('[IMPORT] DONE, imported ' + count + ' accounts');
             } else {
-                console.warn('[IMPORT] decryptedData not usable:', decryptedData === null ? 'null' : typeof decryptedData);
+                logDebug('[IMPORT] decryptedData not usable');
                 alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
-            console.error('Import error with master password:', err);
+            logDebug('[IMPORT] decrypt failed, prompting for alternate password');
 
             // No recovery key is stored on-device by design; prompt the user to
             // enter the password or recovery key this backup file was encrypted with.
@@ -2141,7 +2222,7 @@ async function handleImportVaultFile() {
                         }
                     }
                 } catch (customErr) {
-                    console.error('Custom password import failed:', customErr);
+                    logDebug('[IMPORT] custom password import failed');
                 }
             }
 

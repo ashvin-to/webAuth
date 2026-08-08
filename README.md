@@ -6,12 +6,12 @@ A lightweight, fully client-side 2FA (TOTP) authenticator web application design
 
 ## 🌟 Key Features
 
-- **Zero-Knowledge Architecture**: All encryption and decryption occur locally inside your browser using **AES-256-GCM** (WebCrypto API) and **PBKDF2 key derivation** with **100,000 iterations** of SHA-256. No unencrypted vault data or master passwords ever leave your machine.
+- **Zero-Knowledge Architecture**: All encryption and decryption occur locally inside your browser using **AES-256-GCM** (WebCrypto API) and **PBKDF2 key derivation** with **600,000 iterations** of SHA-256 (600k for new vaults, 100k legacy support). No unencrypted vault data or master passwords ever leave your machine.
 - **Universal TOTP Compatibility**: Supports Google Authenticator, Microsoft Authenticator, Authy, Aegis, Bitwarden, 2FAS, GitHub, Amazon, Steam, and all standard 2FA services.
 - **Google Authenticator Migration**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
 - **In-App Password Management**: Change your master password anytime with full automatic re-encryption across `localStorage`, `IndexedDB`, linked folder sync, and active P2P sync rooms.
 - **Multi-Layer Data Protection**: Vault data and emergency auto-backups are persisted locally across both `localStorage` and `IndexedDB`.
-- **Emergency Recovery Key System**: Automatically generates a 16-character recovery key to decrypt your vault if you forget your master password.
+- **Emergency Recovery Key System**: Automatically generates a 16-character CSPRNG recovery key to decrypt your vault if you forget your master password.
 - **Offline Local QR Encoder**: High-density QR generation (`qr-helper.js`) built completely in-house without external third-party image API calls.
 - **Integrated QR & Camera Scanner**: Built-in camera scanner and drag-and-drop QR image parser.
 
@@ -31,21 +31,21 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Requirements**: Requires the native **File System Access API** (supported in desktop Chrome, Edge, and Opera). Linux users typically pair this with Syncthing, rclone, or a mounted cloud path.
 - **Trade-offs**: Desktop-only. Sync is event-based (unlock, save, and P2P merge), not background real-time polling.
 
-### 3. Real-Time P2P Sync (Trystero WebRTC)
-- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Devices unlocked with the **same master password** automatically derive identical room IDs and connect in real-time without typing or scanning pairing codes. Newly joining peers automatically receive an initial symmetric sync.
+### 3. Real-Time P2P Sync (Trystero WebRTC - Protocol v2)
+- **What it does**: Connects two or more online devices (desktop or mobile) over direct WebRTC peer-to-peer data channels. Pairing generates a 256-bit cryptographically random pairing credential (`crypto.getRandomValues()`). Devices scan a pairing QR containing only this random secret — **the master password is NEVER encoded in QR codes or transmitted over WebRTC/signaling**.
+- **End-to-End Encryption**: All vault sync payloads are encrypted with AES-256-GCM using the master password before leaving the browser. Signaling and TURN servers see only ciphertext.
 - **Conflict Resolution (Last-Write-Wins)**: Every account carries an `updatedAt` timestamp. Concurrent edits on different devices converge to the most recently modified version instead of silently dropping changes.
 - **Delete Propagation (Tombstones)**: Deleted accounts leave an encrypted tombstone (`webauth_tombstones` in `localStorage`/`IndexedDB`), so deletions propagate to all devices and deleted accounts do not resurrect from older broadcasts.
 - **Efficient Delta Sync**: Account saves broadcast only the changed accounts (deltas) instead of re-encrypting and sending the entire vault. Full encrypted snapshots are exchanged on peer join, tab refocus, or when explicitly requested via the **Sync Now** button, which also asks connected peers to resend their vaults.
 - **Sync Status Feedback**: The P2P modal shows connection state and the **last-synced** timestamp.
 - **Peer Approval Gate**: Unrecognized devices are assigned a persistent 8-character fingerprint (`deviceId`). Incoming broadcasts from unapproved devices trigger an explicit **Approve / Ignore** prompt before any accounts are merged.
 - **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
-- **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers (`SHA-256(passphrase + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
+- **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers derived from the random pairing credential (`SHA-256(credential + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
-  - Trystero dynamically loads from `https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/.../+esm` (esm.sh is unreachable on some networks) and uses public signaling for peer discovery.
+  - Trystero dynamically loads pinned ESM modules (`trystero@0.19.0`) and uses public signaling for peer discovery.
   - **Multi-Strategy Redundancy**: The app joins the same room across **two independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`) and Nostr relays (`/nostr`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
   - **ICE/TURN**: Configured with Cloudflare, Google, and STUN protocols STUN servers plus free-tier TURN relay servers (Open Relay Project) as a fallback for restrictive NATs/firewalls.
   - Signaling services see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
-  - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.
 
 ---
 
@@ -53,9 +53,13 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 
 | Feature | Specification |
 | :--- | :--- |
-| **Encryption Algorithm** | AES-256-GCM (256-bit key) |
-| **Key Derivation** | PBKDF2 with SHA-256 (100,000 iterations) |
-| **Local Storage** | Dual Layer (`localStorage` + `IndexedDB`) |
+| **Encryption Algorithm** | AES-256-GCM (256-bit key, 12-byte random IV) |
+| **Key Derivation** | PBKDF2 with SHA-256 (600,000 iterations) |
+| **Local Storage Protection** | Dual Layer (`localStorage` + `IndexedDB`), non-extractable WebCrypto key via SecretStore |
+| **Randomness** | `crypto.getRandomValues()` (CSPRNG) for keys, IVs, salts, pairing secrets, and account IDs |
+| **Supply Chain Security** | Dependencies (`otpauth`, `jsQR`) vendored locally; no third-party executable JS CDNs |
+| **Fail-Closed Guard** | Requires native WebCrypto API and HTTPS/localhost context; AES-CBC fallback removed |
+| **P2P Security** | E2E encrypted payloads (AES-256-GCM); random pairing credential (no master password in QR/P2P) |
 | **QR Code Generation** | Local zero-dependency SVG QR matrix encoder |
 | **Protobuf Parser** | Zero-dependency binary stream parser for Google Auth migration |
 

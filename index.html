@@ -13,12 +13,14 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 
-    <!-- CryptoJS fallback for non-HTTPS / IP environments -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <!-- OTP Auth Library for TOTP code generation -->
-    <script src="https://unpkg.com/otpauth@9.3.1/dist/otpauth.umd.min.js"></script>
-    <!-- QR code decoding for image/camera scanning -->
-    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <!-- SECURITY: All executable JavaScript dependencies are vendored locally
+         to eliminate third-party CDN supply-chain risk. CryptoJS has been removed
+         entirely (AES-CBC fallback is unacceptable for a vault application).
+         Trystero remains as a pinned CDN ESM import (see p2p-sync-trystero.js). -->
+    <!-- OTP Auth Library for TOTP/HOTP code generation (vendored, pinned v9.3.1) -->
+    <script src="vendor/otpauth-9.3.1.umd.min.js"></script>
+    <!-- QR code decoding for image/camera scanning (vendored, pinned v1.4.0) -->
+    <script src="vendor/jsqr-1.4.0.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -157,7 +159,7 @@
                     </div>
 
                     <p class="p2p-description">
-                        Devices unlocked with the same master password automatically find each other in real-time — no code needed.
+                        Pair devices using the QR code below. Your master password is never shared — a random sync credential is used for room discovery.
                     </p>
 
                     <div id="p2pPendingApprovals" style="display: none; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); padding: 12px; border-radius: 8px; margin-top: 12px;">
@@ -171,7 +173,7 @@
                         </div>
                     </div>
                     <div style="margin-top: 12px;">
-                        <label class="p2p-label" for="p2pCustomPassphraseInput">Sync Passphrase (optional — leave blank to use master password)</label>
+                        <label class="p2p-label" for="p2pCustomPassphraseInput">Custom Sync Credential (optional — auto-generated if blank)</label>
                         <div style="display: flex; gap: 8px; margin-top: 4px;">
                             <input type="password" id="p2pCustomPassphraseInput" class="p2p-input" placeholder="Enter custom sync passphrase" autocomplete="off" data-bwignore="true" data-lpignore="true">
                             <button type="button" class="btn btn-secondary btn-sm" id="saveP2pCustomPassBtn">Save Passphrase</button>
