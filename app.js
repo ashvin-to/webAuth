@@ -16,6 +16,27 @@ const BACKUP_AUTOSAVE_KEY = 'webauth_auto_backup_vault';
 const SESSION_CACHE_KEY = 'webauth_session_pass';
 const TOMBSTONES_STORAGE_KEY = 'webauth_tombstones';
 
+// Session cache is encrypted at rest via SecretStore (non-extractable key in
+// IndexedDB) so the master password never appears in plaintext storage.
+async function setSessionCache(pass) {
+    try {
+        if (window.SecretStore && pass) {
+            sessionStorage.setItem(SESSION_CACHE_KEY, await SecretStore.seal(pass));
+        } else if (pass) {
+            sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+        } else {
+            sessionStorage.removeItem(SESSION_CACHE_KEY);
+        }
+    } catch (e) {
+        console.warn('Failed to cache session pass securely:', e);
+        try { sessionStorage.removeItem(SESSION_CACHE_KEY); } catch (e2) {}
+    }
+}
+
+function clearSessionCache() {
+    try { sessionStorage.removeItem(SESSION_CACHE_KEY); } catch (e) {}
+}
+
 // --- P2P sync state (last-write-wins merge + delete tombstones) ---
 let tombstoneMap = new Map();       // secret -> { secret, updatedAt }
 let lastSyncAt = 0;                 // epoch ms of last successful P2P exchange
@@ -351,7 +372,25 @@ async function initAuthScreen() {
             await removeFromIndexedDB(RECOVERY_KEY_STORAGE);
         } catch (e) {}
 
-        const cachedPass = sessionStorage.getItem(SESSION_CACHE_KEY);
+        const cachedPassRaw = sessionStorage.getItem(SESSION_CACHE_KEY);
+        let cachedPass = null;
+        if (cachedPassRaw) {
+            if (window.SecretStore) {
+                try {
+                    cachedPass = await SecretStore.open(cachedPassRaw);
+                } catch (e) {
+                    cachedPass = null;
+                }
+                if (!cachedPass) {
+                    sessionStorage.removeItem(SESSION_CACHE_KEY);
+                } else if (cachedPassRaw && !cachedPassRaw.startsWith('v1:')) {
+                    // Legacy plaintext cached pass — re-seal so it is no longer readable at rest.
+                    await setSessionCache(cachedPass);
+                }
+            } else {
+                cachedPass = cachedPassRaw;
+            }
+        }
         if (existingVault && cachedPass) {
             try {
                 const encryptedPayload = JSON.parse(existingVault);
@@ -361,7 +400,7 @@ async function initAuthScreen() {
                 showDashboard();
                 return;
             } catch (err) {
-                sessionStorage.removeItem(SESSION_CACHE_KEY);
+                clearSessionCache();
             }
         }
 
@@ -748,7 +787,7 @@ async function handleChangePasswordSubmit(e) {
         masterKeyPassword = newPassword;
 
         if (typeof sessionStorage !== 'undefined') {
-            sessionStorage.setItem(SESSION_CACHE_KEY, masterKeyPassword);
+            await setSessionCache(masterKeyPassword);
         }
 
         // Re-encrypt local storage & IndexedDB
@@ -759,7 +798,7 @@ async function handleChangePasswordSubmit(e) {
         if (window.TrysteroSync && TrysteroSync.isActive()) {
             TrysteroSync.leave();
             setupTrysteroListeners();
-            const customPass = TrysteroSync.getCustomPassphrase();
+            const customPass = await TrysteroSync.getCustomPassphrase();
             const joined = await TrysteroSync.join(customPass || masterKeyPassword);
             if (joined) {
                 await broadcastP2pSnapshot();
@@ -778,23 +817,24 @@ async function handleChangePasswordSubmit(e) {
     }
 }
 
-function openP2pSyncModal() {
+async function openP2pSyncModal() {
     toggleModal('p2pSyncModal', true);
     if (window.TrysteroSync) {
         const passInput = document.getElementById('p2pCustomPassphraseInput');
         if (passInput) {
-            passInput.value = TrysteroSync.getCustomPassphrase();
+            passInput.value = await TrysteroSync.getCustomPassphrase();
         }
     }
     updateP2pStatusUI();
 }
 
-function showP2pPairingQr() {
+async function showP2pPairingQr() {
     const qrBox = document.getElementById('p2pPairingQr');
     const hintEl = document.getElementById('p2pPairingHint');
     if (!qrBox || !window.TrysteroSync || !masterKeyPassword) return;
-    const pass = TrysteroSync.getCustomPassphrase() || masterKeyPassword;
-    const isCustom = !!TrysteroSync.getCustomPassphrase();
+    const customPass = await TrysteroSync.getCustomPassphrase();
+    const pass = customPass || masterKeyPassword;
+    const isCustom = !!customPass;
     if (qrBox.style.display !== 'none' && qrBox.dataset.rendered === 'yes') {
         qrBox.style.display = 'none';
         return;
@@ -827,7 +867,7 @@ async function handleJoinP2pSync() {
     }
     if (!masterKeyPassword) return;
     setupTrysteroListeners();
-    const customPass = TrysteroSync.getCustomPassphrase();
+    const customPass = await TrysteroSync.getCustomPassphrase();
     console.log('[P2P] attempting join, customPass set:', !!customPass, 'connected:', TrysteroSync.isConnected());
     const joined = await TrysteroSync.join(customPass || masterKeyPassword);
     console.log('[P2P] join result:', joined, 'peerCount:', TrysteroSync.getPeerCount());
@@ -901,7 +941,7 @@ function setupTrysteroListeners() {
         if (!window.TrysteroSync) return;
         const passInput = document.getElementById('p2pCustomPassphraseInput');
         const passVal = passInput ? passInput.value.trim() : '';
-        TrysteroSync.setCustomPassphrase(passVal);
+        await TrysteroSync.setCustomPassphrase(passVal);
         if (TrysteroSync.isActive()) {
             TrysteroSync.leave();
             const joined = await TrysteroSync.join(passVal || masterKeyPassword);
@@ -990,7 +1030,7 @@ async function handleAuthSubmit(e) {
 
         try {
             await saveVault();
-            sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+            await setSessionCache(pass);
             showDashboard();
         } catch (vaultErr) {
             showError(errorEl, vaultErr.message || 'Failed to initialize vault.');
@@ -1002,7 +1042,7 @@ async function handleAuthSubmit(e) {
             vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
             masterKeyPassword = pass;
             recoveryKeyInMemory = null;
-            sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+            await setSessionCache(pass);
             normalizeVault();
             await loadTombstones();
             logDebug(`Vault unlocked with password. Loaded ${vaultData.length} accounts.`);
@@ -1022,7 +1062,7 @@ async function handleAuthSubmit(e) {
                 vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
                 masterKeyPassword = pass;
                 recoveryKeyInMemory = pass;
-                sessionStorage.setItem(SESSION_CACHE_KEY, pass);
+                await setSessionCache(pass);
                 normalizeVault();
                 await loadTombstones();
                 logDebug(`Vault unlocked via Emergency Recovery Key!`);
@@ -1073,7 +1113,7 @@ async function showDashboard() {
 function lockVault() {
     masterKeyPassword = null;
     vaultData = [];
-    sessionStorage.removeItem(SESSION_CACHE_KEY);
+    clearSessionCache();
     if (timerInterval) {
         clearInterval(timerInterval);
         timerInterval = null;
@@ -1729,7 +1769,7 @@ async function parseAndAddQrPayload(payload) {
             return;
         }
         if (pass) {
-            TrysteroSync.setCustomPassphrase(pass);
+            await TrysteroSync.setCustomPassphrase(pass);
             setupTrysteroListeners();
             const joined = await TrysteroSync.join(pass);
             updateP2pStatusUI();

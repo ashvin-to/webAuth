@@ -1,5 +1,5 @@
 /* WebAuth Vault — offline service worker */
-const CACHE_NAME = 'webauth-v1';
+const CACHE_NAME = 'webauth-v2';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const CORE_ASSETS = [
   './manifest.webmanifest',
   './icon.svg',
   './webcrypto-fallback.js',
+  './secret-store.js',
   './google-auth-proto.js',
   './crypto-vault.js',
   './qr-helper.js',
@@ -18,7 +19,7 @@ const CORE_ASSETS = [
   'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
 ];
 
-const CACHEABLE_ORIGINS = ['cdnjs.cloudflare.com', 'unpkg.com'];
+const CACHEABLE_ORIGINS = ['cdnjs.cloudflare.com', 'unpkg.com', 'cdn.jsdelivr.net'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

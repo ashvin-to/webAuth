@@ -41,8 +41,8 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
 - **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers (`SHA-256(passphrase + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
-  - Trystero dynamically loads from `https://esm.sh/trystero@0.19.0/...` and uses public signaling for peer discovery.
-  - **Multi-Strategy Redundancy**: The app joins the same room across **three independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`), Nostr relays (`/nostr`), and MQTT brokers (`/mqtt`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
+  - Trystero dynamically loads from `https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/.../+esm` (esm.sh is unreachable on some networks) and uses public signaling for peer discovery.
+  - **Multi-Strategy Redundancy**: The app joins the same room across **two independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`) and Nostr relays (`/nostr`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
   - **ICE/TURN**: Configured with Cloudflare, Google, and STUN protocols STUN servers plus free-tier TURN relay servers (Open Relay Project) as a fallback for restrictive NATs/firewalls.
   - Signaling services see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
   - All transmitted vault payloads are AES-256-GCM encrypted with your master password before broadcasting over WebRTC.

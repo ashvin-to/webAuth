@@ -41,9 +41,10 @@ const NOSTR_RELAY_URLS = [
 // strategy to reach each other, so a blocked tracker or relay no longer kills sync.
 // NOTE: Trystero's getRelays reads the `relayUrls` config key for ALL strategies,
 // including torrent (the docs' "trackerUrls" is ignored).
+// CDN: esm.sh is unreachable on some networks — use jsDelivr's +esm bundles instead.
 const STRATEGY_MODULES = [
-    { label: 'torrent', module: 'https://esm.sh/trystero@0.19.0/torrent', opts: { relayUrls: TRACKER_URLS } },
-    { label: 'nostr', module: 'https://esm.sh/trystero@0.19.0/nostr', opts: { relayUrls: NOSTR_RELAY_URLS } }
+    { label: 'torrent', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/torrent.js/+esm', opts: { relayUrls: TRACKER_URLS } },
+    { label: 'nostr', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/nostr.js/+esm', opts: { relayUrls: NOSTR_RELAY_URLS } }
 ];
 
 let sendVaultAction = null;
@@ -158,16 +159,61 @@ async function deriveRoomId(passphrase, daysOffset = 0) {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function getCustomPassphrase() {
-    return localStorage.getItem(STORAGE_KEY_CUSTOM_PASS) || '';
+async function getCustomPassphrase() {
+    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_PASS) || '';
+    if (!raw) return '';
+    if (window.SecretStore) {
+        try {
+            const value = await SecretStore.open(raw);
+            if (value === null) return '';
+            // Legacy plaintext value (written before SecretStore existed) — re-seal now.
+            if (typeof value === 'string' && !raw.startsWith('v1:') && value) {
+                try {
+                    await setCustomPassphrase(value);
+                } catch (e) {}
+            }
+            return value || '';
+        } catch (e) {
+            console.warn('[P2P] failed to decrypt stored passphrase:', e);
+            return '';
+        }
+    }
+    return raw;
 }
 
-function setCustomPassphrase(pass) {
+async function setCustomPassphrase(pass) {
     if (pass && pass.trim()) {
-        localStorage.setItem(STORAGE_KEY_CUSTOM_PASS, pass.trim());
+        let stored = pass.trim();
+        if (window.SecretStore) {
+            try {
+                stored = await SecretStore.seal(stored);
+            } catch (e) {
+                console.warn('[P2P] failed to encrypt passphrase, storing raw:', e);
+            }
+        }
+        localStorage.setItem(STORAGE_KEY_CUSTOM_PASS, stored);
     } else {
         localStorage.removeItem(STORAGE_KEY_CUSTOM_PASS);
     }
+}
+
+// Eagerly re-seal any legacy plaintext passphrase written before SecretStore
+// existed, so the raw value is removed from storage even if nothing reads it.
+async function migrateLegacyCustomPassphrase() {
+    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_PASS) || '';
+    if (!raw || raw.startsWith('v1:')) return;
+    if (!window.SecretStore) return;
+    try {
+        await setCustomPassphrase(raw);
+        console.warn('[P2P] migrated legacy plaintext custom passphrase to encrypted storage');
+    } catch (e) {
+        console.warn('[P2P] custom passphrase migration failed:', e);
+    }
+}
+if (typeof window !== 'undefined') {
+    window.addEventListener('DOMContentLoaded', () => {
+        migrateLegacyCustomPassphrase().catch(() => {});
+    });
 }
 
 function isActive() {
@@ -234,7 +280,7 @@ const handleIncomingVaultMessage = (rawMessage, peerId) => {
 };
 
 async function join(passphraseOverride) {
-    const effectivePass = passphraseOverride || getCustomPassphrase();
+    const effectivePass = passphraseOverride || await getCustomPassphrase();
     if (!effectivePass) return false;
 
     const roomIdCurrent = await deriveRoomId(effectivePass, 0);
@@ -372,6 +418,7 @@ window.TrysteroSync = {
     isPeerApproved,
     getCustomPassphrase,
     setCustomPassphrase,
+    migrateLegacyCustomPassphrase,
     isActive,
     setActive,
     isConnected: () => isJoined
