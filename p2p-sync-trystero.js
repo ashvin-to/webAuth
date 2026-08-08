@@ -58,15 +58,17 @@ const NOSTR_RELAY_URLS = [
     'wss://relay.primal.net'
 ];
 
-// SECURITY: Trystero is loaded from a CDN because it is an ESM module with
-// complex internal dependency chains (WebRTC, signaling) that cannot be
-// trivially vendored as a single file. Version is pinned to 0.19.0.
-// The vault data sent through Trystero is always AES-256-GCM encrypted
-// with the master password before transmission, so Trystero itself never
-// has access to plaintext vault contents.
+// SECURITY: Trystero is now VENDORED locally (bundled single-file ESM via
+// esbuild under vendor/trystero-esm/) so no third-party CDN JavaScript is ever
+// executed. This also lets us enforce a strict Content-Security-Policy
+// (script-src 'self') without allowing jsDelivr's dynamically-injected inline
+// module scripts, which the previous CDN +esm loading triggered. Versions are
+// pinned (trystero@0.19.0). The vault data sent through Trystero is always
+// AES-256-GCM encrypted with the master password before transmission, so
+// Trystero itself never has access to plaintext vault contents.
 const STRATEGY_MODULES = [
-    { label: 'torrent', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/torrent.js/+esm', opts: { relayUrls: TRACKER_URLS } },
-    { label: 'nostr', module: 'https://cdn.jsdelivr.net/npm/trystero@0.19.0/src/nostr.js/+esm', opts: { relayUrls: NOSTR_RELAY_URLS } }
+    { label: 'torrent', module: './vendor/trystero-esm/trystero-torrent.mjs', opts: { relayUrls: TRACKER_URLS } },
+    { label: 'nostr', module: './vendor/trystero-esm/trystero-nostr.mjs', opts: { relayUrls: NOSTR_RELAY_URLS } }
 ];
 
 let sendVaultAction = null;

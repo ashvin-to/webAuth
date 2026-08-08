@@ -16,7 +16,9 @@
     <!-- SECURITY: All executable JavaScript dependencies are vendored locally
          to eliminate third-party CDN supply-chain risk. CryptoJS has been removed
          entirely (AES-CBC fallback is unacceptable for a vault application).
-         Trystero remains as a pinned CDN ESM import (see p2p-sync-trystero.js). -->
+         Trystero (P2P) is bundled as single-file ESM under vendor/trystero-esm/,
+         so no third-party CDN script is ever executed and the strict
+         Content-Security-Policy (script-src 'self') can be fully enforced. -->
     <!-- OTP Auth Library for TOTP/HOTP code generation (vendored, pinned v9.3.1) -->
     <script src="vendor/otpauth-9.3.1.umd.min.js"></script>
     <!-- QR code decoding for image/camera scanning (vendored, pinned v1.4.0) -->

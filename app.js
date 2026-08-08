@@ -2181,12 +2181,36 @@ async function handleImportVaultFile() {
                 const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? (parsed.vault.startsWith('{') ? JSON.parse(parsed.vault) : null) : parsed.vault) : null);
                 logDebug('[IMPORT] encObj: ' + (encObj ? 'found' : 'null'));
                 if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
+                    // SECURITY: This is an encrypted backup. Try the current vault
+                    // password first, then fall back to prompting for the
+                    // password/recovery key this file was encrypted with.
                     try {
                         decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
                         logDebug('[IMPORT] decrypted OK, len=' + (Array.isArray(decryptedData) ? decryptedData.length : '?'));
                     } catch (decErr) {
+                        // Wrong password for THIS file (or it was encrypted under a
+                        // different master password). Do NOT swallow — offer the
+                        // alternate-password path so the user can recover.
                         logDebug('[IMPORT] decrypt with master password FAILED');
                     }
+
+                    if (!decryptedData) {
+                        decryptedData = await tryImportWithAlternatePassword(encObj);
+                        if (!decryptedData) {
+                            alert('Failed to decrypt vault file. Password mismatch.');
+                            fileInput.value = '';
+                            return;
+                        }
+                    }
+
+                    if (Array.isArray(decryptedData)) {
+                        await importDecryptedAccounts(decryptedData);
+                    } else {
+                        logDebug('[IMPORT] decrypted data not an array');
+                        alert('Invalid vault file format or corrupted file.');
+                    }
+                    fileInput.value = '';
+                    return;
                 } else if (Array.isArray(parsed)) {
                     decryptedData = parsed;
                     logDebug('[IMPORT] plain array vault, len=' + parsed.length);
@@ -2210,55 +2234,50 @@ async function handleImportVaultFile() {
             }
 
             if (decryptedData && Array.isArray(decryptedData)) {
-                let count = 0;
-                for (let acc of decryptedData) {
-                    // SECURITY: Never log secret/TOTP keys. Only safe metadata.
-                    await saveNewAccount(acc);
-                    count++;
-                }
-                buildAccountsDOM();
-                alert(`Successfully imported ${count} account(s) from file!`);
-                logDebug('[IMPORT] DONE, imported ' + count + ' accounts');
+                await importDecryptedAccounts(decryptedData);
             } else {
                 logDebug('[IMPORT] decryptedData not usable');
                 alert('Invalid vault file format or corrupted file.');
             }
         } catch (err) {
-            logDebug('[IMPORT] decrypt failed, prompting for alternate password');
-
-            // No recovery key is stored on-device by design; prompt the user to
-            // enter the password or recovery key this backup file was encrypted with.
-            const customPass = prompt('This backup file was created under a different password or recovery key. Please enter the password or recovery key for this backup file:');
-            if (customPass && customPass.trim().length > 0) {
-                try {
-                    let rawText = e.target.result.trim();
-                    let parsed = JSON.parse(rawText);
-                    while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-                    const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
-                    if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
-                        const decryptedData = await CryptoVault.decrypt(encObj, customPass.trim());
-                        if (decryptedData && Array.isArray(decryptedData)) {
-                            let count = 0;
-                            for (let acc of decryptedData) {
-                                await saveNewAccount(acc);
-                                count++;
-                            }
-                            buildAccountsDOM();
-                            alert(`Successfully imported ${count} account(s) from backup file!`);
-                            fileInput.value = '';
-                            return;
-                        }
-                    }
-                } catch (customErr) {
-                    logDebug('[IMPORT] custom password import failed');
-                }
-            }
-
+            logDebug('[IMPORT] import failed: ' + (err && err.message ? err.message : err));
             alert('Failed to decrypt vault file. Password mismatch.');
         }
         fileInput.value = '';
     };
     reader.readAsText(file);
+}
+
+/**
+ * SECURITY: No recovery key is stored on-device by design. When a backup file
+ * fails to decrypt with the current vault password, prompt the user for the
+ * password or recovery key this backup was encrypted with and retry.
+ * Returns the decrypted array, or null on failure/cancel.
+ */
+async function tryImportWithAlternatePassword(encObj) {
+    const customPass = prompt('This backup file was created under a different password or recovery key. Please enter the password or recovery key for this backup file:');
+    if (!customPass || !customPass.trim()) return null;
+    try {
+        const decryptedData = await CryptoVault.decrypt(encObj, customPass.trim());
+        logDebug('[IMPORT] alternate password decrypt ' + (Array.isArray(decryptedData) ? 'OK, len=' + decryptedData.length : 'returned non-array'));
+        return Array.isArray(decryptedData) ? decryptedData : null;
+    } catch (customErr) {
+        logDebug('[IMPORT] alternate password decrypt failed');
+        return null;
+    }
+}
+
+async function importDecryptedAccounts(decryptedData) {
+    if (!Array.isArray(decryptedData)) return false;
+    let count = 0;
+    for (let acc of decryptedData) {
+        const ok = await saveNewAccount(acc);
+        if (ok) count++;
+    }
+    buildAccountsDOM();
+    alert(`Successfully imported ${count} account(s) from file!`);
+    logDebug('[IMPORT] DONE, imported ' + count + ' accounts');
+    return true;
 }
 
 function toggleModal(id, show) {

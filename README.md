@@ -42,7 +42,7 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
 - **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers derived from the random pairing credential (`SHA-256(credential + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
-  - Trystero dynamically loads pinned ESM modules (`trystero@0.19.0`) and uses public signaling for peer discovery.
+  - Trystero is bundled locally as single-file ESM (`vendor/trystero-esm/`) and uses public signaling for peer discovery — no third-party CDN JavaScript is executed.
   - **Multi-Strategy Redundancy**: The app joins the same room across **two independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`) and Nostr relays (`/nostr`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
   - **ICE/TURN**: Configured with Cloudflare, Google, and STUN protocols STUN servers plus free-tier TURN relay servers (Open Relay Project) as a fallback for restrictive NATs/firewalls.
   - Signaling services see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
@@ -57,7 +57,7 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 | **Key Derivation** | PBKDF2 with SHA-256 (600,000 iterations) |
 | **Local Storage Protection** | Dual Layer (`localStorage` + `IndexedDB`), non-extractable WebCrypto key via SecretStore |
 | **Randomness** | `crypto.getRandomValues()` (CSPRNG) for keys, IVs, salts, pairing secrets, and account IDs |
-| **Supply Chain Security** | Dependencies (`otpauth`, `jsQR`) vendored locally; no third-party executable JS CDNs |
+| **Supply Chain Security** | Dependencies (`otpauth`, `jsQR`) vendored locally; Trystero bundled locally as single-file ESM — no third-party executable JS CDNs |
 | **Fail-Closed Guard** | Requires native WebCrypto API and HTTPS/localhost context; AES-CBC fallback removed |
 | **P2P Security** | E2E encrypted payloads (AES-256-GCM); random pairing credential (no master password in QR/P2P) |
 | **QR Code Generation** | Local zero-dependency SVG QR matrix encoder |
