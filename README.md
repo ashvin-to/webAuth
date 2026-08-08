@@ -38,14 +38,21 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 - **Delete Propagation (Tombstones)**: Deleted accounts leave an encrypted tombstone (`webauth_tombstones` in `localStorage`/`IndexedDB`), so deletions propagate to all devices and deleted accounts do not resurrect from older broadcasts.
 - **Efficient Delta Sync**: Account saves broadcast only the changed accounts (deltas) instead of re-encrypting and sending the entire vault. Full encrypted snapshots are exchanged on peer join, tab refocus, or when explicitly requested via the **Sync Now** button, which also asks connected peers to resend their vaults.
 - **Sync Status Feedback**: The P2P modal shows connection state and the **last-synced** timestamp.
-- **Peer Approval Gate**: Unrecognized devices are assigned a persistent 8-character fingerprint (`deviceId`). Incoming broadcasts from unapproved devices trigger an explicit **Approve / Ignore** prompt before any accounts are merged.
+- **Peer Approval Gate**: Unrecognized devices are assigned a persistent 8-character fingerprint (`deviceId`). Incoming broadcasts from unapproved devices trigger an explicit **Approve / Ignore** prompt before any accounts are merged. The P2P modal auto-opens with a warning toast when a request arrives, so a pending approval is never silently missed.
 - **Custom Sync Passphrase**: Supports an optional custom sync passphrase (decoupled from the master login password) to isolate P2P rooms across device subsets.
 - **Weekly Room ID Rotation**: Room IDs rotate automatically based on UTC week numbers derived from the random pairing credential (`SHA-256(credential + salt + '-week-' + weekNum)`). Dual-room joining provides a seamless 7-day overlap window across weekly rotation boundaries.
 - **Signaling & ICE/TURN Fallback**:
   - Trystero is bundled locally as single-file ESM (`vendor/trystero-esm/`) and uses public signaling for peer discovery — no third-party CDN JavaScript is executed.
   - **Multi-Strategy Redundancy**: The app joins the same room across **two independent signaling strategies simultaneously** — BitTorrent trackers (`/torrent`) and Nostr relays (`/nostr`). Peers only need a single shared strategy to connect, so a blocked or flaky tracker/relay no longer breaks sync.
   - **ICE/TURN**: Configured with Cloudflare, Google, and STUN protocols STUN servers plus free-tier TURN relay servers (Open Relay Project) as a fallback for restrictive NATs/firewalls.
+  - **Custom TURN**: Networks where free public TURN is unreliable (symmetric NAT, business/firewalled networks) can add their **own TURN server(s)** directly in the P2P modal for dependable relayed connections.
+  - **Best-effort public signaling**: P2P depends on public trackers/relays, which can be flaky or temporarily down (dead endpoints are pruned as found). When reliable always-on sync matters more than zero-infrastructure, use **Linked Folder Sync** above.
   - Signaling services see connection metadata (IP addresses and hashed room IDs) but **never see vault contents or secrets**.
+
+### Other ways to move accounts
+- **otpauth-migration QR**: `Export Accounts (otpauth-migration)` produces a QR / URI readable by Google Authenticator, Aegis, Ente Auth, 2FAS, Bitwarden, and more (and this app imports those same QRs). Good for one-way bulk migration or importing from another authenticator.
+- **Recovery Backup (paper / QR)**: A printable recovery key + QR unlock the vault from scratch on a fresh device — a fallback, not live sync.
+- **Optional server-backed room**: Because every sync payload is always AES-256-GCM encrypted, an encrypted "room" (self-hosted relay or zero-knowledge backend storing only ciphertext) can be added later without ever exposing vault contents.
 
 ---
 
