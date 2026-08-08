@@ -517,6 +517,9 @@ function setupEventListeners() {
     const leaveP2pBtn = document.getElementById('leaveP2pSyncBtn');
     if (leaveP2pBtn) leaveP2pBtn.addEventListener('click', handleLeaveP2pSync);
 
+    const saveTurnBtn = document.getElementById('saveTurnServerBtn');
+    if (saveTurnBtn) saveTurnBtn.addEventListener('click', handleSaveTurnServer);
+
     const showPairingBtn = document.getElementById('showP2pPairingQrBtn');
     if (showPairingBtn) showPairingBtn.addEventListener('click', showP2pPairingQr);
     const scanPairingBtn = document.getElementById('scanP2pPairingQrBtn');
@@ -824,8 +827,51 @@ async function openP2pSyncModal() {
         if (passInput) {
             passInput.value = await TrysteroSync.getCustomPassphrase();
         }
+        populateTurnServerForm();
     }
     updateP2pStatusUI();
+}
+
+function populateTurnServerForm() {
+    if (!window.TrysteroSync) return;
+    const urlInput = document.getElementById('turnServerUrlInput');
+    const userInput = document.getElementById('turnServerUsernameInput');
+    const credInput = document.getElementById('turnServerCredentialInput');
+    const statusEl = document.getElementById('turnServerStatus');
+    const servers = TrysteroSync.getTurnServers();
+    const first = servers[0] || {};
+    if (urlInput) urlInput.value = first.urls || '';
+    if (userInput) userInput.value = first.username || '';
+    if (credInput) credInput.value = first.credential || '';
+    if (statusEl) {
+        statusEl.textContent = servers.length
+            ? 'Using custom TURN relay. Rejoin P2P to apply.'
+            : 'No custom TURN — using default STUN/TURN servers.';
+    }
+}
+
+function handleSaveTurnServer() {
+    if (!window.TrysteroSync) return;
+    const urlInput = document.getElementById('turnServerUrlInput');
+    const userInput = document.getElementById('turnServerUsernameInput');
+    const credInput = document.getElementById('turnServerCredentialInput');
+    const url = (urlInput ? urlInput.value.trim() : '');
+    if (!url) {
+        TrysteroSync.setTurnServers([]);
+        showToast('Custom TURN relay cleared.', 'success');
+    } else {
+        const list = [{ urls: url, username: (userInput ? userInput.value.trim() : '') || undefined, credential: (credInput ? credInput.value.trim() : '') || undefined }];
+        TrysteroSync.setTurnServers(list);
+        showToast('TURN relay saved — rejoin P2P to apply.', 'success');
+    }
+    populateTurnServerForm();
+    if (TrysteroSync.isActive()) {
+        TrysteroSync.leave();
+        setupTrysteroListeners();
+        TrysteroSync.getCustomPassphrase().then(custom => {
+            TrysteroSync.join(custom || masterKeyPassword).then(() => updateP2pStatusUI());
+        });
+    }
 }
 
 async function showP2pPairingQr() {

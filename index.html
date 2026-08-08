@@ -187,6 +187,18 @@
                         <button type="button" class="btn btn-secondary" id="p2pSyncNowBtn" style="flex: 1;">Sync Now</button>
                     </div>
                     <div style="margin-top: 14px; border-top: 1px solid var(--card-border); padding-top: 12px;">
+                        <label class="p2p-label" for="turnServerUrlInput">TURN Relay (optional — needed on networks that block UDP, e.g. self-hosted coturn)</label>
+                        <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 4px;">
+                            <input type="text" id="turnServerUrlInput" class="p2p-input" placeholder="turn:your-server:3478" autocomplete="off" data-bwignore="true" data-lpignore="true">
+                            <div style="display: flex; gap: 6px;">
+                                <input type="text" id="turnServerUsernameInput" class="p2p-input" placeholder="username (optional)" autocomplete="off" data-bwignore="true" data-lpignore="true" style="flex: 1;">
+                                <input type="password" id="turnServerCredentialInput" class="p2p-input" placeholder="credential (optional)" autocomplete="off" data-bwignore="true" data-lpignore="true" style="flex: 1;">
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-sm" id="saveTurnServerBtn">Save TURN Relay</button>
+                            <p style="font-size: 0.75rem; color: var(--text-muted, #888); margin-top: 2px;" id="turnServerStatus"></p>
+                        </div>
+                    </div>
+                    <div style="margin-top: 14px; border-top: 1px solid var(--card-border); padding-top: 12px;">
                         <label class="p2p-label">QR Pairing</label>
                         <div style="display: flex; gap: 8px; margin-top: 4px;">
                             <button type="button" class="btn btn-secondary btn-sm" id="showP2pPairingQrBtn" style="flex: 1;">Show Pairing QR</button>

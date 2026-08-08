@@ -59,31 +59,64 @@ let isJoined = false;
 // Failure backoff: on restrictive networks every connection attempt fails, and
 // Trystero re-announces every ~5s, accumulating RTCPeerConnections until the
 // browser throws "Cannot create so many PeerConnections". When enough
-// consecutive failures occur with zero connected peers, pause to free them.
+// consecutive failures occur with zero connected peers, pause to free them,
+// then auto-retry with exponential backoff instead of disabling sync.
 let consecutiveFailures = 0;
 let backoffUntil = 0;
 let backoffReason = null;
+let backoffRetryTimer = null;
+let backoffAttempt = 0;
+let lastJoinPass = null;
 const FAILURE_THRESHOLD = 5;
-const BACKOFF_MS = 5 * 60 * 1000;
+const BACKOFF_BASE_MS = 30 * 1000;
+const BACKOFF_MAX_MS = 5 * 60 * 1000;
 
 function isFailureMessage(msg) {
-    return /peer failed|Ice connection failed|Cannot create so many PeerConnections/i.test(msg);
+    return /peer failed|Ice connection failed|Cannot create so many PeerConnections|setRemoteDescription|set remote answer/i.test(msg);
+}
+
+function isResourceExhaustion(msg) {
+    return /Cannot create so many PeerConnections/i.test(msg);
+}
+
+function scheduleBackoff() {
+    consecutiveFailures = 0;
+    backoffAttempt++;
+    const delay = Math.min(BACKOFF_BASE_MS * Math.pow(2, backoffAttempt - 1), BACKOFF_MAX_MS);
+    backoffUntil = Date.now() + delay;
+
+    // Leave frees the accumulated RTCPeerConnections so the browser cap clears.
+    try { leave(); } catch (e) {}
+
+    backoffReason = 'WebRTC appears blocked on this network — retrying automatically in ' + Math.round(delay / 1000) + 's.';
+    console.warn('[P2P] ' + backoffReason);
+    errorCallbacks.forEach(cb => {
+        try { cb(backoffReason); } catch (e) {}
+    });
+
+    if (backoffRetryTimer) clearTimeout(backoffRetryTimer);
+    backoffRetryTimer = setTimeout(() => {
+        backoffRetryTimer = null;
+        backoffAttempt = 0;
+        if (lastJoinPass) {
+            join(lastJoinPass).catch(() => {});
+        }
+    }, delay);
 }
 
 function notifyError(msg) {
     lastErrorMsg = msg;
 
-    if (isFailureMessage(msg)) {
+    const isFailure = isFailureMessage(msg);
+    if (isFailure) {
         consecutiveFailures++;
-        if (consecutiveFailures >= FAILURE_THRESHOLD && getPeerCount() === 0 && Date.now() >= backoffUntil) {
-            consecutiveFailures = 0;
-            backoffUntil = Date.now() + BACKOFF_MS;
-            backoffReason = 'WebRTC appears blocked on this network — P2P paused for 5 minutes. Click "Enable P2P Auto-Sync" to retry.';
-            console.warn('[P2P] ' + backoffReason);
-            try { leave(); } catch (e) {}
-            errorCallbacks.forEach(cb => {
-                try { cb(backoffReason); } catch (e) {}
-            });
+        // Resource exhaustion (PeerConnection cap) is an immediate backoff
+        // signal — do not wait for the normal threshold.
+        const shouldBackoff = isResourceExhaustion(msg)
+            ? Date.now() >= backoffUntil
+            : (consecutiveFailures >= FAILURE_THRESHOLD && getPeerCount() === 0 && Date.now() >= backoffUntil);
+        if (shouldBackoff) {
+            scheduleBackoff();
             return;
         }
     }
@@ -95,14 +128,17 @@ function notifyError(msg) {
 
 if (typeof window !== 'undefined') {
     window.addEventListener('error', (e) => {
-        if (e && e.message && e.message.includes('Ice connection failed')) {
-            notifyError('Connection to peer failed — this can happen on restrictive networks');
+        if (e && e.message && isFailureMessage(e.message)) {
+            notifyError(e.message);
         }
     });
 
     window.addEventListener('unhandledrejection', (e) => {
-        if (e && e.reason && (e.reason.message || String(e.reason)).includes('Ice connection failed')) {
-            notifyError('Connection to peer failed — this can happen on restrictive networks');
+        if (e && e.reason) {
+            const msg = e.reason && e.reason.message || String(e.reason);
+            if (isFailureMessage(msg)) {
+                notifyError(msg);
+            }
         }
     });
 }
@@ -143,6 +179,38 @@ function isPeerApproved(deviceId) {
 }
 
 const STORAGE_KEY_CUSTOM_PASS = 'webauth_trystero_custom_pass';
+const STORAGE_KEY_TURN = 'webauth_turn_servers';
+
+// Custom TURN relays entered in the P2P modal. Free/public TURN is unreliable
+// and the college network blocks UDP, so allow the user to supply their own
+// relay (e.g. a self-hosted coturn on a VPS) to punch through restrictive NATs.
+function getTurnServers() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY_TURN);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function setTurnServers(servers) {
+    const list = Array.isArray(servers) ? servers.filter(s => s && s.urls) : [];
+    try {
+        if (list.length) {
+            localStorage.setItem(STORAGE_KEY_TURN, JSON.stringify(list));
+        } else {
+            localStorage.removeItem(STORAGE_KEY_TURN);
+        }
+    } catch (e) {}
+    return list.length;
+}
+
+function getIceServers() {
+    const custom = getTurnServers();
+    if (!custom.length) return ICE_SERVERS;
+    return ICE_SERVERS.concat(custom);
+}
 
 function getWeekNumber(daysOffset = 0) {
     const timestamp = Date.now() + (daysOffset * 86400 * 1000);
@@ -235,12 +303,13 @@ let allPeers = new Set();
 let strategyStatus = [];
 
 function makeRtcOpts(strategyOpts, password) {
+    const iceServers = getIceServers();
     return {
         appId: 'webauth-vault-sync',
         password: password,
-        rtcConfig: { iceServers: ICE_SERVERS },
-        config: { iceServers: ICE_SERVERS },
-        iceServers: ICE_SERVERS,
+        rtcConfig: { iceServers },
+        config: { iceServers },
+        iceServers,
         ...strategyOpts
     };
 }
@@ -250,6 +319,7 @@ function wireRoom(room) {
     getVault(handleIncomingVaultMessage);
     room.onPeerJoin(peerId => {
         consecutiveFailures = 0;
+        backoffAttempt = 0;
         backoffReason = null;
         allPeers.add(peerId);
         peerCount = allPeers.size;
@@ -283,6 +353,7 @@ async function join(passphraseOverride) {
     const effectivePass = passphraseOverride || await getCustomPassphrase();
     if (!effectivePass) return false;
 
+    lastJoinPass = effectivePass;
     const roomIdCurrent = await deriveRoomId(effectivePass, 0);
     const roomIdPrev = await deriveRoomId(effectivePass, -7);
     if (!roomIdCurrent) return false;
@@ -419,6 +490,9 @@ window.TrysteroSync = {
     getCustomPassphrase,
     setCustomPassphrase,
     migrateLegacyCustomPassphrase,
+    getTurnServers,
+    setTurnServers,
+    getIceServers,
     isActive,
     setActive,
     isConnected: () => isJoined
