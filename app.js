@@ -1683,24 +1683,36 @@ async function handleAddAccount(e) {
 
 async function saveNewAccount(acc) {
     // SECURITY: Treat imported data as untrusted. Validate and sanitize.
-    if (!acc || typeof acc !== 'object') return false;
-    // Prototype pollution guard: reject objects with dangerous keys.
-    if ('__proto__' in acc || 'constructor' in acc && typeof acc.constructor !== 'function' || 'prototype' in acc) {
+    if (!acc) return false;
+    let obj = acc;
+    if (Array.isArray(acc)) {
+        obj = {
+            issuer: acc[0],
+            account: acc[1],
+            secret: acc[2],
+            period: acc[3] || 30,
+            digits: acc[4] || 6
+        };
+    }
+    if (typeof obj !== 'object') return false;
+    // Prototype pollution guard: safely check own properties (not inherited prototype properties)
+    if (Object.prototype.hasOwnProperty.call(obj, '__proto__') || Object.prototype.hasOwnProperty.call(obj, 'prototype')) {
         logDebug('[IMPORT] rejected object with suspicious prototype keys');
         return false;
     }
-    if (typeof acc.secret !== 'string' || !acc.secret.trim()) {
+    const rawSecret = obj.secret || obj.key || obj.secret_key || obj.raw_secret || obj.secretKey;
+    if (typeof rawSecret !== 'string' || !rawSecret.trim()) {
         logDebug('[IMPORT] rejected account with missing/invalid secret');
         return false;
     }
-    if (acc.secret.length > 500) {
+    if (rawSecret.length > 500) {
         logDebug('[IMPORT] rejected account with oversized secret');
         return false;
     }
-    const cleanSecret = acc.secret.toUpperCase().replace(/\s+/g, '');
+    const cleanSecret = rawSecret.toUpperCase().replace(/\s+/g, '');
     // Truncate issuer/account to prevent oversized DOM injection.
-    const cleanIssuer = (typeof acc.issuer === 'string' ? acc.issuer : 'Service').trim().slice(0, 200);
-    const cleanAccount = (typeof acc.account === 'string' ? acc.account : 'Account').trim().slice(0, 200);
+    const cleanIssuer = (typeof obj.issuer === 'string' ? obj.issuer : 'Service').trim().slice(0, 200);
+    const cleanAccount = (typeof obj.account === 'string' ? obj.account : 'Account').trim().slice(0, 200);
 
     const existingIndex = vaultData.findIndex(a => 
         a.secret === cleanSecret || 
@@ -1824,7 +1836,7 @@ function scanCameraFrame() {
     const canvas = document.getElementById('cameraCanvas');
     const ctx = canvas.getContext('2d');
 
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -2166,7 +2178,7 @@ async function handleImportVaultFile() {
             let decryptedData = null;
 
             if (parsed && typeof parsed === 'object') {
-                const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? JSON.parse(parsed.vault) : parsed.vault) : null);
+                const encObj = parsed.cipher || parsed.ciphertext ? parsed : (parsed.vault ? (typeof parsed.vault === 'string' ? (parsed.vault.startsWith('{') ? JSON.parse(parsed.vault) : null) : parsed.vault) : null);
                 logDebug('[IMPORT] encObj: ' + (encObj ? 'found' : 'null'));
                 if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
                     try {
@@ -2178,6 +2190,22 @@ async function handleImportVaultFile() {
                 } else if (Array.isArray(parsed)) {
                     decryptedData = parsed;
                     logDebug('[IMPORT] plain array vault, len=' + parsed.length);
+                } else if (Array.isArray(parsed.accounts)) {
+                    decryptedData = parsed.accounts;
+                } else if (Array.isArray(parsed.vault)) {
+                    decryptedData = parsed.vault;
+                } else if (Array.isArray(parsed.items)) {
+                    decryptedData = parsed.items;
+                } else if (Array.isArray(parsed.tokens)) {
+                    decryptedData = parsed.tokens;
+                } else if (Array.isArray(parsed.data)) {
+                    decryptedData = parsed.data;
+                } else if (parsed.db && Array.isArray(parsed.db.entries)) {
+                    decryptedData = parsed.db.entries.map(e => ({
+                        issuer: e.issuer || e.name || 'Service',
+                        account: e.name || 'Account',
+                        secret: e.info && e.info.secret ? e.info.secret : e.secret
+                    }));
                 }
             }
 
