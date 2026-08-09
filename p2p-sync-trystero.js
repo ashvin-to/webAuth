@@ -96,7 +96,7 @@ const BACKOFF_BASE_MS = 30 * 1000;
 const BACKOFF_MAX_MS = 5 * 60 * 1000;
 
 function isFailureMessage(msg) {
-    return /peer failed|Ice connection failed|Cannot create so many PeerConnections|setRemoteDescription|set remote answer/i.test(msg);
+    return /peer failed|Ice connection failed|Connection failed|Cannot create so many PeerConnections|setRemoteDescription|set remote answer/i.test(msg);
 }
 
 function isResourceExhaustion(msg) {
@@ -162,6 +162,15 @@ if (typeof window !== 'undefined') {
             if (isFailureMessage(msg)) {
                 notifyError(msg);
             }
+        }
+    });
+
+    // Peer failures (ICE/connection failed, datachannel errors) are dispatched
+    // by the vendored Trystero glue as a CustomEvent so they feed the failure
+    // backoff without surfacing as uncaught errors.
+    window.addEventListener('trystero-peer-error', (e) => {
+        if (e && e.detail) {
+            notifyError(e.detail);
         }
     });
 }

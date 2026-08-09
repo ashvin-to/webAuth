@@ -3371,16 +3371,25 @@ var Peer = class _Peer extends import_streamx.Duplex {
       }
     }
     if (data.sdp) {
-      this._pc.setRemoteDescription(new RTCSessionDescription(data)).then(() => {
-        if (this.destroyed) return;
-        this._pendingCandidates.forEach((candidate) => {
-          this._addIceCandidate(candidate);
+      const signalingState = this._pc.signalingState;
+      if ((data.type === "answer" || data.type === "pranswer") && signalingState !== "have-local-offer") {
+        this._debug("ignoring stale %s (signalingState %s)", data.type, signalingState);
+      } else if (data.type === "offer" && signalingState !== "stable") {
+        this._debug("ignoring stale offer (signalingState %s)", signalingState);
+      } else if (data.type === "rollback" && signalingState === "stable") {
+        this._debug("ignoring rollback in stable state");
+      } else {
+        this._pc.setRemoteDescription(new RTCSessionDescription(data)).then(() => {
+          if (this.destroyed) return;
+          this._pendingCandidates.forEach((candidate) => {
+            this._addIceCandidate(candidate);
+          });
+          this._pendingCandidates = [];
+          if (this._pc.remoteDescription.type === "offer") this._createAnswer();
+        }).catch((err) => {
+          this.__destroy((0, import_err_code.default)(err, "ERR_SET_REMOTE_DESCRIPTION"));
         });
-        this._pendingCandidates = [];
-        if (this._pc.remoteDescription.type === "offer") this._createAnswer();
-      }).catch((err) => {
-        this.__destroy((0, import_err_code.default)(err, "ERR_SET_REMOTE_DESCRIPTION"));
-      });
+      }
     }
     if (!data.sdp && !data.candidate && !data.renegotiate && !data.transceiverRequest) {
       this.__destroy((0, import_err_code.default)(new Error("signal() called with invalid signal data"), "ERR_SIGNALING"));
@@ -3403,6 +3412,7 @@ var Peer = class _Peer extends import_streamx.Duplex {
   send(chunk) {
     if (this._destroying) return;
     if (this.destroyed) throw (0, import_err_code.default)(new Error("cannot send after peer is destroyed"), "ERR_DESTROYED");
+    if (!this._channel || this._channel.readyState !== "open") return;
     this._channel.send(chunk);
   }
   _needsNegotiation() {
@@ -3549,7 +3559,7 @@ var Peer = class _Peer extends import_streamx.Duplex {
       } catch (err) {
         return this.__destroy((0, import_err_code.default)(err, "ERR_DATA_CHANNEL"));
       }
-      if (this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
+      if (this._channel && this._channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
         this._debug("start backpressure: bufferedAmount %d", this._channel.bufferedAmount);
         this._cb = cb;
       } else {
@@ -3867,7 +3877,7 @@ var Peer = class _Peer extends import_streamx.Duplex {
     this.push(data);
   }
   _onChannelBufferedAmountLow() {
-    if (this.destroyed || !this._cb) return;
+    if (this.destroyed || !this._cb || !this._channel) return;
     this._debug("ending backpressure: bufferedAmount %d", this._channel.bufferedAmount);
     const cb = this._cb;
     this._cb = null;
@@ -4084,6 +4094,19 @@ var peer_default = (initiator, config) => {
   });
   const onData = (d) => earlyDataBuffer.push(d);
   let earlyDataBuffer = [];
+  // simple-peer's 'error' event throws when nothing listens, and Trystero
+  // attaches no error handler — so peer failures used to surface as uncaught
+  // errors. Report them to the app instead (feeds P2P failure backoff).
+  peer.on("error", (err) => {
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("[trystero] peer error:", err && err.message || err);
+    }
+    if (typeof window !== "undefined" && typeof CustomEvent !== "undefined") {
+      window.dispatchEvent(new CustomEvent("trystero-peer-error", {
+        detail: (err && err.message) || String(err)
+      }));
+    }
+  });
   peer.on(dataEvent, onData);
   return {
     id: peer._id,

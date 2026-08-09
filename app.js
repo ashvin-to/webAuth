@@ -111,6 +111,16 @@ function logDebug(msg) {
 
 // --- Global error trap: surfaces runtime errors visibly for diagnosis ---
 (function () {
+    // Expected WebRTC noise (Trystero/simple-peer); surfaced via the P2P modal note instead.
+    function isBenignWebRtcMsg(msg) {
+        if (msg.includes('Ice connection failed')) return true;
+        if (msg.includes('Cannot create so many PeerConnections')) return true;
+        if (msg.includes('Connection failed')) return true;
+        if (msg.includes('set remote answer')) return true;
+        if (msg.includes('bufferedAmount')) return true;
+        if (msg.includes('readyState is not')) return true;
+        return false;
+    }
     function show(msg) {
         try {
             let box = document.getElementById('errorLogBox');
@@ -127,17 +137,12 @@ function logDebug(msg) {
     }
     window.addEventListener('error', (e) => {
         const msg = (e && e.message) || (e && e.type) || '';
-        // Expected WebRTC noise (Trystero/simple-peer); surfaced via the P2P modal note instead.
-        if (msg.includes('Ice connection failed')) return;
-        if (msg.includes('Cannot create so many PeerConnections')) return;
-        if (msg.includes('Connection failed')) return;
+        if (isBenignWebRtcMsg(msg)) return;
         show('[ERROR] ' + msg + ' @ ' + (e.filename || '') + ':' + (e.lineno || '?'));
     });
     window.addEventListener('unhandledrejection', (e) => {
         const msg = (e.reason && (e.reason.message || e.reason)) || 'unhandled rejection';
-        if (String(msg).includes('Ice connection failed')) return;
-        if (String(msg).includes('Cannot create so many PeerConnections')) return;
-        if (String(msg).includes('Connection failed')) return;
+        if (isBenignWebRtcMsg(String(msg))) return;
         show('[PROMISE] ' + msg);
     });
     window.showAppError = show;
@@ -1373,11 +1378,22 @@ function reorderAccount(draggedId, targetId) {
 
 async function deleteAccountDirect(event, id) {
     event.stopPropagation();
-    if (confirm('Are you sure you want to delete this account?')) {
-        vaultData = vaultData.filter(a => a.id !== id);
-        await saveVault();
-        buildAccountsDOM();
+    if (!confirm('Are you sure you want to delete this account?')) return;
+
+    // SECURITY: Write a delete tombstone BEFORE removing the account so P2P
+    // snapshot merges and linked-file syncs cannot resurrect it. Mirrors
+    // deleteCurrentDetailAccount().
+    const target = vaultData.find(a => a.id === id);
+    if (target) {
+        const delTs = Date.now();
+        tombstoneMap.set(target.secret, { secret: target.secret, updatedAt: delTs });
+        markAccountDeleted(target.secret, delTs);
     }
+
+    vaultData = vaultData.filter(a => a.id !== id);
+    await saveVault();
+    await persistTombstones();
+    buildAccountsDOM();
 }
 
 function openAccountDetailModal(id) {
