@@ -4,7 +4,7 @@
  * to ensure clients receive patched code promptly. The 'activate' handler
  * deletes old caches so stale JavaScript is not served indefinitely.
  */
-const CACHE_NAME = 'webauth-v4';
+const CACHE_NAME = 'webauth-v5';
 const CORE_ASSETS = [
   './',
   './index.html',

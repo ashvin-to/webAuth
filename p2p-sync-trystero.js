@@ -159,6 +159,15 @@ if (typeof window !== 'undefined') {
     window.addEventListener('unhandledrejection', (e) => {
         if (e && e.reason) {
             const msg = e.reason && e.reason.message || String(e.reason);
+            // Expected Trystero teardown races (e.g. null data channel while a
+            // peer is being destroyed on an ICE-failed connection). Suppress the
+            // browser's "Uncaught (in promise)" console error — ICE failures are
+            // already surfaced via notifyError/backoff; this rejection is send
+            // noise and must not spam the console.
+            if (/channel is null|cannot access property "bufferedAmount"|trystero/i.test(msg)) {
+                if (e.preventDefault) e.preventDefault();
+                return;
+            }
             if (isFailureMessage(msg)) {
                 notifyError(msg);
             }
@@ -471,7 +480,11 @@ function broadcast(serializedPayload) {
     for (const { room } of activeRooms) {
         try {
             if (room && room.__sendVault) {
-                room.__sendVault(serialized);
+                const res = room.__sendVault(serialized);
+                // sendVault may reject asynchronously (null data-channel during
+                // teardown when WebRTC is blocked) — swallow it to avoid an
+                // unhandledrejection.
+                if (res && typeof res.catch === 'function') res.catch(() => {});
                 any = true;
             }
         } catch (err) {}
@@ -481,7 +494,14 @@ function broadcast(serializedPayload) {
 
 function leave() {
     for (const { room } of activeRooms) {
-        try { room.leave(); } catch (e) {}
+        try {
+            // Trystero's leave() is async and internally destroys peers, which can
+            // reject asynchronously (e.g. a null data-channel during teardown when
+            // WebRTC is blocked). A sync try/catch won't swallow that rejection, so
+            // attach .catch() to the returned promise to avoid an unhandledrejection.
+            const res = room.leave();
+            if (res && typeof res.catch === 'function') res.catch(() => {});
+        } catch (e) {}
     }
     activeRooms = [];
     allPeers.clear();

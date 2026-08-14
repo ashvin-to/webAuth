@@ -1067,6 +1067,18 @@ function setupTrysteroListeners() {
         if (p2pErrorEl) {
             p2pErrorEl.textContent = 'P2P note: ' + msg;
             p2pErrorEl.style.display = 'block';
+            // On restrictive networks the real blocker is a missing reachable TURN
+            // relay: direct UDP/STUN is filtered and the bundled free relay is
+            // defunct. Surface a one-time actionable hint next to the TURN field.
+            if (/Ice connection failed|ICE failed|add a TURN server|WebRTC appears blocked|Connection failed/i.test(msg) &&
+                window.TrysteroSync && TrysteroSync.getTurnServers().length === 0) {
+                const tStatus = document.getElementById('turnServerStatus');
+                if (tStatus && !tStatus.dataset.hinted) {
+                    tStatus.dataset.hinted = '1';
+                    tStatus.style.color = '#fde047';
+                    tStatus.textContent = '⚠ WebRTC/ICE is blocked on this network and no custom TURN relay is set. Add a TURN relay below (self-hosted coturn or a TURN provider, e.g. turn:host:3478 with credentials) — CSP already permits turn:/turns: — to sync over restrictive networks.';
+                }
+            }
         }
         updateP2pStatusUI();
         console.warn('[P2P]', msg);
@@ -1338,7 +1350,7 @@ function buildAccountsDOM() {
 
         const type = accountType(acc);
         const hotpNextBtn = type === 'HOTP'
-            ? `<button class="btn-hotp-next" id="next-${acc.id}" title="Next counter" style="display:none;" onclick="advanceHotpCounter(event, '${acc.id}')">Next</button>`
+            ? `<button class="btn-hotp-next" id="next-${acc.id}" title="Next counter" style="display:none;">Next</button>`
             : '';
 
         card.innerHTML = `
@@ -1349,17 +1361,31 @@ function buildAccountsDOM() {
                     <p>${escapeHtml(acc.account)}</p>
                 </div>
                 <div class="account-actions">
-                    <button class="btn btn-secondary btn-sm pin-btn" title="${acc.pinned ? 'Unpin' : 'Pin to top'}" onclick="togglePinAccount(event, '${acc.id}')">${acc.pinned ? '★' : '☆'}</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteAccountDirect(event, '${acc.id}')">Delete</button>
+                    <button class="btn btn-secondary btn-sm pin-btn" title="${acc.pinned ? 'Unpin' : 'Pin to top'}">${acc.pinned ? '★' : '☆'}</button>
+                    <button class="btn btn-danger btn-sm delete-btn">Delete</button>
                 </div>
             </div>
-            <div class="code-display" onclick="copyAccountCode(event, '${acc.id}')">
+            <div class="code-display">
                 <span class="code-number" id="code-${acc.id}">------</span>
                 ${hotpNextBtn}
                 <span class="timer-circle" id="timer-${acc.id}">--s</span>
                 <span class="code-progress"><span class="code-progress-fill" id="fill-${acc.id}"></span></span>
             </div>
         `;
+
+        card.querySelector('.btn-hotp-next')?.addEventListener('click', (event) => {
+            advanceHotpCounter(event, acc.id);
+        });
+        card.querySelector('.pin-btn')?.addEventListener('click', (event) => {
+            togglePinAccount(event, acc.id);
+        });
+        card.querySelector('.delete-btn')?.addEventListener('click', (event) => {
+            deleteAccountDirect(event, acc.id);
+        });
+        card.querySelector('.code-display')?.addEventListener('click', (event) => {
+            copyAccountCode(event, acc.id);
+        });
+
         grid.appendChild(card);
     });
 

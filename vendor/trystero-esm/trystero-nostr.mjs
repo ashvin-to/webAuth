@@ -6682,6 +6682,14 @@ var room_default = (onPeer, onPeerLeave, onSelfLeave) => {
         return all(
           iterate(targets, async (id, peer) => {
             const { channel } = peer;
+            // PATCH (robustness): Trystero 0.19.0 dereferences peer.channel
+            // without a null check. When a peer's data channel is destroyed
+            // during an ICE failure, this rejects with "cannot access property
+            // 'bufferedAmount', channel is null" — an unhandled promise
+            // rejection. Skip sending to a closed/dead peer instead of throwing.
+            if (!channel || channel.readyState !== "open") {
+              return;
+            }
             let chunkN = 0;
             while (chunkN < chunkTotal) {
               const chunk = chunks[chunkN];
