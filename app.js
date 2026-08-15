@@ -277,45 +277,98 @@ async function persistVaultLocal() {
 // Broadcast a full encrypted snapshot of the entire vault + tombstones.
 async function broadcastP2pSnapshot() {
     if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) {
-        return;
+        return false;
     }
-    const message = { full: true, accounts: vaultData, deletes: Array.from(tombstoneMap.values()) };
-    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
-    const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
-    if (ok) lastSyncAt = Date.now();
-    return ok;
+    try {
+        const message = { full: true, accounts: vaultData, deletes: Array.from(tombstoneMap.values()) };
+        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const ok = await TrysteroSync.broadcast(JSON.stringify(encrypted));
+        if (ok) lastSyncAt = Date.now();
+        return ok;
+    } catch (err) {
+        // Peer may have disconnected during send — handle gracefully.
+        console.warn('[P2P] Snapshot broadcast failed:', err && err.message || err);
+        return false;
+    }
 }
 
 // Broadcast only the accounts that changed since the last broadcast (delta).
 async function broadcastP2pDelta() {
     if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) return false;
     if (pendingSyncChanges.upserts.size === 0 && pendingSyncChanges.deletes.size === 0) return false;
-    const message = {
-        full: false,
-        accounts: Array.from(pendingSyncChanges.upserts.values()),
-        deletes: Array.from(pendingSyncChanges.deletes.values())
-    };
-    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
-    const ok = TrysteroSync.broadcast(JSON.stringify(encrypted));
-    if (ok) {
-        pendingSyncChanges.upserts.clear();
-        pendingSyncChanges.deletes.clear();
-        lastSyncAt = Date.now();
+    try {
+        const message = {
+            full: false,
+            accounts: Array.from(pendingSyncChanges.upserts.values()),
+            deletes: Array.from(pendingSyncChanges.deletes.values())
+        };
+        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const ok = await TrysteroSync.broadcast(JSON.stringify(encrypted));
+        if (ok) {
+            pendingSyncChanges.upserts.clear();
+            pendingSyncChanges.deletes.clear();
+            lastSyncAt = Date.now();
+        }
+        return ok;
+    } catch (err) {
+        // Peer may have disconnected during send — handle gracefully.
+        console.warn('[P2P] Delta broadcast failed:', err && err.message || err);
+        return false;
     }
-    return ok;
 }
+
+// Guard: prevent overlapping Sync Now requests.
+let syncInFlight = false;
 
 // Ask all connected peers to resend their snapshot, then send ours.
 async function requestP2pSync() {
-    if (!masterKeyPassword || !window.TrysteroSync || !TrysteroSync.isConnected()) {
-        alert('P2P sync is not connected. Enable P2P Auto-Sync first.');
+    if (!masterKeyPassword || !window.TrysteroSync) {
+        showToast('P2P sync module is unavailable.', 'error');
         return;
     }
-    const message = { request: true };
-    const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
-    TrysteroSync.broadcast(JSON.stringify(encrypted));
-    await broadcastP2pSnapshot();
-    logDebug('P2P sync requested from peers.');
+
+    // Refuse to send unless connected with at least one usable peer.
+    if (!TrysteroSync.isConnected() || TrysteroSync.getPeerCount() === 0) {
+        const state = TrysteroSync.getConnectionState();
+        if (state === 'connecting' || state === 'signaling') {
+            showToast('Still connecting to peers. Please wait a moment and try again.', 'info');
+        } else if (state === 'reconnecting') {
+            showToast('Reconnecting after a network issue. Please wait for the retry to complete.', 'info');
+        } else if (state === 'failed') {
+            showToast('P2P connection failed. Use \u201cRetry connection\u201d to try again.', 'error');
+        } else {
+            showToast('No active peer connection is available yet. Enable P2P Auto-Sync first.', 'info');
+        }
+        return;
+    }
+
+    // Prevent overlapping Sync Now requests.
+    if (syncInFlight) {
+        showToast('Sync is already in progress.', 'info');
+        return;
+    }
+
+    syncInFlight = true;
+    try {
+        const message = { request: true };
+        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const reqOk = await TrysteroSync.broadcast(JSON.stringify(encrypted));
+        if (!reqOk) {
+            showToast('The peer disconnected before synchronization completed.', 'error');
+            return;
+        }
+        const snapOk = await broadcastP2pSnapshot();
+        if (snapOk) {
+            logDebug('P2P sync requested from peers and snapshot sent.');
+        } else {
+            showToast('The peer disconnected before synchronization completed.', 'error');
+        }
+    } catch (err) {
+        // Peer may have disconnected during send — handle gracefully.
+        showToast('The peer disconnected before synchronization completed.', 'error');
+    } finally {
+        syncInFlight = false;
+    }
 }
 
 
@@ -720,14 +773,23 @@ async function syncWithLinkedFile() {
 
 function updateP2pStatusUI() {
     const chip = document.getElementById('p2pHeaderChip');
+    const state = window.TrysteroSync ? TrysteroSync.getConnectionState() : 'idle';
     if (chip) {
-        if (!window.TrysteroSync || (!TrysteroSync.isActive() && !TrysteroSync.isConnected())) {
+        if (!window.TrysteroSync || (state === 'idle' && !TrysteroSync.isActive())) {
             chip.style.display = 'none';
-        } else if (TrysteroSync.isConnected()) {
-            const peerCount = TrysteroSync.getPeerCount();
+        } else if (state === 'connected') {
+            const pc = TrysteroSync.getPeerCount();
             chip.style.display = 'inline-flex';
-            chip.textContent = peerCount > 0 ? `P2P · ${peerCount}` : 'P2P · searching';
-            chip.className = peerCount > 0 ? 'p2p-chip chip-connected' : 'p2p-chip chip-connecting';
+            chip.textContent = pc > 0 ? `P2P · ${pc}` : 'P2P · searching';
+            chip.className = pc > 0 ? 'p2p-chip chip-connected' : 'p2p-chip chip-connecting';
+        } else if (state === 'reconnecting') {
+            chip.style.display = 'inline-flex';
+            chip.textContent = 'P2P · retrying…';
+            chip.className = 'p2p-chip chip-connecting';
+        } else if (state === 'failed') {
+            chip.style.display = 'inline-flex';
+            chip.textContent = 'P2P · failed';
+            chip.className = 'p2p-chip chip-offline';
         } else {
             chip.style.display = 'inline-flex';
             chip.textContent = 'P2P · connecting…';
@@ -737,18 +799,30 @@ function updateP2pStatusUI() {
 
     const statusEl = document.getElementById('p2pSyncStatusText');
     if (statusEl) {
-        if (!window.TrysteroSync || !TrysteroSync.isConnected()) {
+        if (!window.TrysteroSync || state === 'idle') {
             statusEl.textContent = 'Disconnected';
             statusEl.className = 'p2p-status-badge badge-disconnected';
-        } else {
-            const peerCount = TrysteroSync.getPeerCount();
-            if (peerCount > 0) {
-                statusEl.textContent = `Connected (${peerCount} device(s) online)`;
+        } else if (state === 'connected') {
+            const pc = TrysteroSync.getPeerCount();
+            if (pc > 0) {
+                statusEl.textContent = `Connected (${pc} device(s) online)`;
                 statusEl.className = 'p2p-status-badge badge-connected';
             } else {
                 statusEl.textContent = 'Waiting for peer...';
                 statusEl.className = 'p2p-status-badge badge-connecting';
             }
+        } else if (state === 'signaling' || state === 'connecting') {
+            statusEl.textContent = 'Connecting…';
+            statusEl.className = 'p2p-status-badge badge-connecting';
+        } else if (state === 'reconnecting') {
+            statusEl.textContent = 'Reconnecting…';
+            statusEl.className = 'p2p-status-badge badge-connecting';
+        } else if (state === 'failed') {
+            statusEl.textContent = 'Connection failed';
+            statusEl.className = 'p2p-status-badge badge-disconnected';
+        } else {
+            statusEl.textContent = 'Disconnecting…';
+            statusEl.className = 'p2p-status-badge badge-disconnected';
         }
     }
 
@@ -760,7 +834,7 @@ function updateP2pStatusUI() {
     }
 
     const strategyEl = document.getElementById('p2pStrategyText');
-    if (strategyEl && window.TrysteroSync && TrysteroSync.isConnected()) {
+    if (strategyEl && window.TrysteroSync && state !== 'idle') {
         const status = TrysteroSync.getStrategyStatus ? TrysteroSync.getStrategyStatus() : [];
         strategyEl.textContent = 'Signaling: ' + (status.length ? status.join(' · ') : 'connecting…');
     } else if (strategyEl) {
@@ -1061,6 +1135,27 @@ function setupTrysteroListeners() {
 
     const syncNowBtn = document.getElementById('p2pSyncNowBtn');
     if (syncNowBtn) syncNowBtn.addEventListener('click', requestP2pSync);
+
+    const retryBtn = document.getElementById('retryP2pConnectionBtn');
+    if (retryBtn) retryBtn.addEventListener('click', async () => {
+        if (!window.TrysteroSync) return;
+        retryBtn.disabled = true;
+        retryBtn.textContent = 'Retrying\u2026';
+        try {
+            await TrysteroSync.retryConnection();
+        } catch (e) {}
+        retryBtn.disabled = false;
+        retryBtn.textContent = 'Retry Connection';
+        updateP2pStatusUI();
+    });
+
+    // Show/hide the retry button based on connection state.
+    TrysteroSync.onStateChange((newState) => {
+        if (retryBtn) {
+            retryBtn.style.display = (newState === 'failed' || newState === 'reconnecting') ? '' : 'none';
+        }
+        updateP2pStatusUI();
+    });
 
     const p2pErrorEl = document.getElementById('p2pErrorText');
     TrysteroSync.onError((msg) => {

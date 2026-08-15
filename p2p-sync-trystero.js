@@ -77,8 +77,30 @@ let peerCount = 0;
 let receiveCallbacks = new Set();
 let peerChangeCallbacks = new Set();
 let errorCallbacks = new Set();
+let stateChangeCallbacks = new Set();
 let lastErrorMsg = null;
-let isJoined = false;
+
+// ── P2P Connection State Machine ────────────────────────────────────────────
+// Valid states:  idle | signaling | connecting | connected | reconnecting | failed | leaving
+// Transitions:
+//   idle        → signaling   (join() called, loading strategy modules)
+//   signaling   → connecting  (at least one room joined, waiting for peers)
+//   connecting  → connected   (first usable peer joined via onPeerJoin)
+//   connected   → connecting  (last peer left but rooms still active)
+//   connecting  → reconnecting(backoff triggered after ICE failures)
+//   connecting  → failed      (all strategies failed during join)
+//   connected   → leaving     (leave() called)
+//   connecting  → leaving     (leave() called)
+//   reconnecting→ signaling   (backoff timer expired, retrying)
+//   *           → leaving     (leave() called from any active state)
+//   leaving     → idle        (cleanup complete)
+let connectionState = 'idle';
+
+// ── Lifecycle guards ────────────────────────────────────────────────────────
+// Prevent overlapping join/leave operations which create duplicate rooms or
+// leave behind orphaned RTCPeerConnections.
+let joinInProgress = false;
+let leaveInProgress = false;
 
 // Failure backoff: on restrictive networks every connection attempt fails, and
 // Trystero re-announces every ~5s, accumulating RTCPeerConnections until the
@@ -94,6 +116,7 @@ let lastJoinCredential = null;
 const FAILURE_THRESHOLD = 5;
 const BACKOFF_BASE_MS = 30 * 1000;
 const BACKOFF_MAX_MS = 5 * 60 * 1000;
+const MAX_BACKOFF_RETRIES = 6;
 
 function isFailureMessage(msg) {
     return /peer failed|Ice connection failed|Connection failed|Cannot create so many PeerConnections|setRemoteDescription|set remote answer/i.test(msg);
@@ -103,14 +126,37 @@ function isResourceExhaustion(msg) {
     return /Cannot create so many PeerConnections/i.test(msg);
 }
 
+function setConnectionState(newState) {
+    const prev = connectionState;
+    if (prev === newState) return;
+    connectionState = newState;
+    stateChangeCallbacks.forEach(cb => {
+        try { cb(newState, prev); } catch (e) {}
+    });
+}
+
 function scheduleBackoff() {
     consecutiveFailures = 0;
     backoffAttempt++;
+
+    // ── Max retries reached — stop auto-retrying, let the user decide. ──
+    if (backoffAttempt > MAX_BACKOFF_RETRIES) {
+        cleanupRooms();
+        setConnectionState('failed');
+        backoffReason = 'Connection failed after ' + MAX_BACKOFF_RETRIES + ' attempts. Use \u201cRetry connection\u201d to try again.';
+        errorCallbacks.forEach(cb => {
+            try { cb(backoffReason); } catch (e) {}
+        });
+        return;
+    }
+
     const delay = Math.min(BACKOFF_BASE_MS * Math.pow(2, backoffAttempt - 1), BACKOFF_MAX_MS);
     backoffUntil = Date.now() + delay;
 
     // Leave frees the accumulated RTCPeerConnections so the browser cap clears.
-    try { leave(); } catch (e) {}
+    // Use internal cleanup to avoid resetting state to idle — we want reconnecting.
+    cleanupRooms();
+    setConnectionState('reconnecting');
 
     backoffReason = 'WebRTC appears blocked on this network — retrying automatically in ' + Math.round(delay / 1000) + 's.';
     errorCallbacks.forEach(cb => {
@@ -120,11 +166,31 @@ function scheduleBackoff() {
     if (backoffRetryTimer) clearTimeout(backoffRetryTimer);
     backoffRetryTimer = setTimeout(() => {
         backoffRetryTimer = null;
-        backoffAttempt = 0;
         if (lastJoinCredential) {
             join().catch(() => {});
         }
     }, delay);
+}
+
+/**
+ * Internal room cleanup shared by scheduleBackoff() and leave().
+ * Does NOT change connectionState — callers set it afterwards.
+ */
+function cleanupRooms() {
+    for (const { room } of activeRooms) {
+        try {
+            const res = room.leave();
+            if (res && typeof res.catch === 'function') res.catch(() => {});
+        } catch (e) {}
+    }
+    activeRooms = [];
+    allPeers.clear();
+    peerCount = 0;
+    strategyStatus = [];
+    sendVaultAction = null;
+    getVaultAction = null;
+    setActive(false);
+    notifyPeerChange();
 }
 
 function notifyError(msg) {
@@ -383,11 +449,19 @@ function wireRoom(room) {
         backoffReason = null;
         allPeers.add(peerId);
         peerCount = allPeers.size;
+        // First usable peer: transition connecting → connected
+        if (peerCount > 0 && (connectionState === 'connecting' || connectionState === 'signaling')) {
+            setConnectionState('connected');
+        }
         notifyPeerChange(peerId, 'join');
     });
     room.onPeerLeave(peerId => {
         allPeers.delete(peerId);
         peerCount = allPeers.size;
+        // Last peer left: transition connected → connecting (still in rooms, waiting)
+        if (peerCount === 0 && connectionState === 'connected') {
+            setConnectionState('connecting');
+        }
         notifyPeerChange(peerId, 'leave');
     });
     room.__sendVault = sendVault;
@@ -417,102 +491,190 @@ const handleIncomingVaultMessage = (rawMessage, peerId) => {
  * room password.
  */
 async function join() {
-    let credential = await getCustomPassphrase();
-    if (!credential) {
-        // SECURITY: Auto-generate a random pairing credential on first use.
-        credential = generatePairingCredential();
-        await setCustomPassphrase(credential);
-    }
+    // Guard: do not create overlapping join operations.
+    if (joinInProgress) return false;
+    // Guard: wait for any in-progress leave to finish.
+    if (leaveInProgress) return false;
 
-    lastJoinCredential = credential;
-    const roomIdCurrent = await deriveRoomId(credential, 0);
-    const roomIdPrev = await deriveRoomId(credential, -7);
-    if (!roomIdCurrent) return false;
-
-    if (isJoined && activeRooms.length > 0) {
-        return true;
-    }
-
-    let joinedAny = false;
-    strategyStatus = [];
-
-    for (const strat of STRATEGY_MODULES) {
-        try {
-            const { joinRoom } = await import(strat.module);
-            const room = joinRoom(makeRtcOpts(strat.opts, credential), roomIdCurrent);
-            wireRoom(room);
-            activeRooms.push({ room, label: strat.label });
-            strategyStatus.push(strat.label + ': joined');
-            joinedAny = true;
-
-            // Overlap secondary room for previous week
-            try {
-                const secRoom = joinRoom(makeRtcOpts(strat.opts, credential), roomIdPrev);
-                wireRoom(secRoom);
-                activeRooms.push({ room: secRoom, label: strat.label + '-prev' });
-            } catch (secErr) {}
-        } catch (err) {
-            strategyStatus.push(strat.label + ': failed (' + (err && err.message || err) + ')');
-            notifyError('P2P signaling unavailable via ' + strat.label + (err && err.message ? ' (' + err.message + ')' : ''));
+    joinInProgress = true;
+    try {
+        let credential = await getCustomPassphrase();
+        if (!credential) {
+            // SECURITY: Auto-generate a random pairing credential on first use.
+            credential = generatePairingCredential();
+            await setCustomPassphrase(credential);
         }
-    }
 
-    if (!joinedAny) {
-        isJoined = false;
-        setActive(false);
-        return false;
-    }
+        lastJoinCredential = credential;
+        const roomIdCurrent = await deriveRoomId(credential, 0);
+        const roomIdPrev = await deriveRoomId(credential, -7);
+        if (!roomIdCurrent) return false;
 
-    isJoined = true;
-    setActive(true);
-    notifyPeerChange();
-    return true;
+        // Already joined and rooms are active — no-op.
+        if (connectionState !== 'idle' && connectionState !== 'failed' && connectionState !== 'reconnecting' && activeRooms.length > 0) {
+            return true;
+        }
+
+        setConnectionState('signaling');
+        let joinedAny = false;
+        strategyStatus = [];
+
+        for (const strat of STRATEGY_MODULES) {
+            try {
+                const { joinRoom } = await import(strat.module);
+                const room = joinRoom(makeRtcOpts(strat.opts, credential), roomIdCurrent);
+                wireRoom(room);
+                activeRooms.push({ room, label: strat.label });
+                strategyStatus.push(strat.label + ': joined');
+                joinedAny = true;
+
+                // Overlap secondary room for previous week
+                try {
+                    const secRoom = joinRoom(makeRtcOpts(strat.opts, credential), roomIdPrev);
+                    wireRoom(secRoom);
+                    activeRooms.push({ room: secRoom, label: strat.label + '-prev' });
+                } catch (secErr) {}
+            } catch (err) {
+                strategyStatus.push(strat.label + ': failed (' + (err && err.message || err) + ')');
+                notifyError('P2P signaling unavailable via ' + strat.label + (err && err.message ? ' (' + err.message + ')' : ''));
+            }
+        }
+
+        if (!joinedAny) {
+            setConnectionState('failed');
+            setActive(false);
+            return false;
+        }
+
+        // Rooms joined, waiting for peers — transition to connecting.
+        // If peers are already present (unlikely but possible in fast reconnect),
+        // wireRoom's onPeerJoin will promote to 'connected'.
+        if (connectionState === 'signaling') {
+            setConnectionState('connecting');
+        }
+        setActive(true);
+        notifyPeerChange();
+        return true;
+    } finally {
+        joinInProgress = false;
+    }
 }
 
-function broadcast(serializedPayload) {
-    if (!isJoined || activeRooms.length === 0) return false;
+/**
+ * Broadcast an encrypted payload to all connected peers.
+ *
+ * ASYNC & REJECTION-SAFE:
+ *   - Each Trystero send is normalized with Promise.resolve() and individually
+ *     awaited so that closed/null data-channel errors are caught per-room.
+ *   - Returns true only when ≥1 peer actually accepted the send.
+ *   - Returns false when there are no active peers or all sends failed.
+ *   - Failed rooms (dead data channels) are removed from activeRooms.
+ *   - Never generates an unhandled rejection.
+ */
+async function broadcast(serializedPayload) {
+    if (connectionState !== 'connected' || peerCount === 0 || activeRooms.length === 0) return false;
     const msgObj = {
         deviceId: getDeviceId(),
         payload: serializedPayload
     };
     const serialized = JSON.stringify(msgObj);
-    let any = false;
-    for (const { room } of activeRooms) {
+    let succeeded = 0;
+    const failedRooms = [];
+
+    for (const entry of activeRooms) {
+        const { room } = entry;
         try {
             if (room && room.__sendVault) {
-                const res = room.__sendVault(serialized);
-                // sendVault may reject asynchronously (null data-channel during
-                // teardown when WebRTC is blocked) — swallow it to avoid an
-                // unhandledrejection.
-                if (res && typeof res.catch === 'function') res.catch(() => {});
-                any = true;
+                // Normalize: Trystero may return a promise, a value, or throw
+                // synchronously. Wrapping in Promise.resolve() covers all cases.
+                await Promise.resolve(room.__sendVault(serialized));
+                succeeded++;
             }
-        } catch (err) {}
+        } catch (err) {
+            const msg = err && err.message || String(err);
+            // Classify: channel-is-null, bufferedAmount, closed data channels,
+            // and teardown errors are recoverable peer failures.
+            if (/channel is null|bufferedAmount|closed|teardown|destroyed/i.test(msg)) {
+                failedRooms.push(entry);
+            } else {
+                // Non-recoverable send error — still mark room as failed
+                // so we stop trying it, but don't surface as unhandled rejection.
+                failedRooms.push(entry);
+            }
+        }
     }
-    return any;
+
+    // Remove rooms whose data channel is dead so we don't keep trying them.
+    if (failedRooms.length > 0) {
+        activeRooms = activeRooms.filter(r => !failedRooms.includes(r));
+        // If all rooms failed, transition back to connecting.
+        if (activeRooms.length === 0) {
+            allPeers.clear();
+            peerCount = 0;
+            setConnectionState('connecting');
+            notifyPeerChange();
+        }
+    }
+
+    // Return true only when at least one peer actually accepted the send.
+    // Do not claim success merely because a room object exists.
+    return succeeded > 0;
 }
 
+/**
+ * Leave all P2P rooms and reset state to idle.
+ * Idempotent — safe to call multiple times. Returns a promise so callers
+ * can await cleanup completion before starting a new join.
+ */
 function leave() {
-    for (const { room } of activeRooms) {
-        try {
-            // Trystero's leave() is async and internally destroys peers, which can
-            // reject asynchronously (e.g. a null data-channel during teardown when
-            // WebRTC is blocked). A sync try/catch won't swallow that rejection, so
-            // attach .catch() to the returned promise to avoid an unhandledrejection.
-            const res = room.leave();
-            if (res && typeof res.catch === 'function') res.catch(() => {});
-        } catch (e) {}
+    // Guard: prevent overlapping leave operations.
+    if (leaveInProgress) return Promise.resolve();
+    // Already idle — nothing to do.
+    if (connectionState === 'idle') return Promise.resolve();
+
+    leaveInProgress = true;
+    setConnectionState('leaving');
+
+    // Cancel any pending backoff retry so it doesn't fire after leave.
+    if (backoffRetryTimer) {
+        clearTimeout(backoffRetryTimer);
+        backoffRetryTimer = null;
     }
-    activeRooms = [];
-    allPeers.clear();
-    peerCount = 0;
-    strategyStatus = [];
     backoffReason = null;
-    sendVaultAction = null;
-    getVaultAction = null;
-    isJoined = false;
-    setActive(false);
-    notifyPeerChange();
+    backoffAttempt = 0;
+    consecutiveFailures = 0;
+
+    cleanupRooms();
+    setConnectionState('idle');
+    leaveInProgress = false;
+    return Promise.resolve();
+}
+
+/**
+ * Manual retry: reset backoff state and attempt to rejoin.
+ * Exposed to the UI so users can retry after the bounded retry limit is hit.
+ */
+async function retryConnection() {
+    // Cancel any pending auto-retry.
+    if (backoffRetryTimer) {
+        clearTimeout(backoffRetryTimer);
+        backoffRetryTimer = null;
+    }
+    backoffAttempt = 0;
+    consecutiveFailures = 0;
+    backoffReason = null;
+    backoffUntil = 0;
+    lastErrorMsg = null;
+
+    // If currently in a non-idle state, leave first.
+    if (connectionState !== 'idle') {
+        leave();
+    }
+
+    if (lastJoinCredential) {
+        return join();
+    }
+    return false;
 }
 
 function onReceive(cb) {
@@ -531,13 +693,45 @@ function getPeerCount() {
     return peerCount;
 }
 
+/**
+ * Returns true ONLY when the P2P system is in 'connected' state AND at least
+ * one usable peer exists. A joined signaling room with zero peers is NOT
+ * considered connected.
+ */
 function isConnected() {
-    return isJoined;
+    return connectionState === 'connected' && peerCount > 0;
+}
+
+/**
+ * Return the current explicit P2P connection state.
+ * One of: idle, signaling, connecting, connected, reconnecting, failed, leaving.
+ */
+function getConnectionState() {
+    return connectionState;
+}
+
+/**
+ * Returns true when at least one peer is connected and the data channel is
+ * ready for encrypted vault transfer. Equivalent to isConnected() — provided
+ * as a semantic alias for clarity in calling code.
+ */
+function isDataChannelReady() {
+    return connectionState === 'connected' && peerCount > 0;
 }
 
 function onError(cb) {
     if (typeof cb === 'function') {
         errorCallbacks.add(cb);
+    }
+}
+
+/**
+ * Register a callback invoked whenever the connection state changes.
+ * Callback signature: (newState: string, previousState: string) => void
+ */
+function onStateChange(cb) {
+    if (typeof cb === 'function') {
+        stateChangeCallbacks.add(cb);
     }
 }
 
@@ -553,12 +747,16 @@ window.TrysteroSync = {
     join,
     leave,
     broadcast,
+    retryConnection,
     onReceive,
     onPeerChange,
     onError,
+    onStateChange,
     getLastError,
     getStrategyStatus,
+    getConnectionState,
     getPeerCount,
+    isDataChannelReady,
     deriveRoomId,
     getDeviceId,
     getTrustedPeers,
@@ -573,5 +771,5 @@ window.TrysteroSync = {
     getIceServers,
     isActive,
     setActive,
-    isConnected: () => isJoined
+    isConnected
 };
