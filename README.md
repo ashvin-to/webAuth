@@ -10,8 +10,7 @@ A lightweight, fully client-side 2FA (TOTP) authenticator web application design
 - **Universal TOTP Compatibility**: Supports Google Authenticator, Microsoft Authenticator, Authy, Aegis, Bitwarden, 2FAS, GitHub, Amazon, Steam, and all standard 2FA services.
 - **Google Authenticator Migration**: Directly parses Google Authenticator export QR codes (`otpauth-migration://`) containing multiple accounts.
 - **In-App Password Management**: Change your master password anytime with full automatic re-encryption across `localStorage`, `IndexedDB`, linked folder sync, and active P2P sync rooms.
-- **Multi-Layer Data Protection**: Vault data and emergency auto-backups are persisted locally across both `localStorage` and `IndexedDB`.
-- **Emergency Recovery Key System**: Automatically generates a 16-character CSPRNG recovery key to decrypt your vault if you forget your master password.
+- **Multi-Layer Data Protection**: Vault data is persisted locally across both `localStorage` and `IndexedDB`.
 - **Offline Local QR Encoder**: High-density QR generation (`qr-helper.js`) built completely in-house without external third-party image API calls.
 - **Integrated QR & Camera Scanner**: Built-in camera scanner and drag-and-drop QR image parser.
 
@@ -51,7 +50,6 @@ WebAuth Vault provides three independent, opt-in synchronization mechanisms. Non
 
 ### Other ways to move accounts
 - **otpauth-migration QR**: `Export Accounts (otpauth-migration)` produces a QR / URI readable by Google Authenticator, Aegis, Ente Auth, 2FAS, Bitwarden, and more (and this app imports those same QRs). Good for one-way bulk migration or importing from another authenticator.
-- **Recovery Backup (paper / QR)**: A printable recovery key + QR unlock the vault from scratch on a fresh device — a fallback, not live sync.
 - **Optional server-backed room**: Because every sync payload is always AES-256-GCM encrypted, an encrypted "room" (self-hosted relay or zero-knowledge backend storing only ciphertext) can be added later without ever exposing vault contents.
 
 ---

@@ -51,33 +51,16 @@
             <section id="authSection" class="card auth-card">
                 <div class="card-header">
                     <h2 id="authTitle">Unlock Vault</h2>
-                    <p id="authSubtitle">Enter your master password or Recovery Key to decrypt your 2FA keys.</p>
+                    <p id="authSubtitle">Enter your master password to decrypt your 2FA keys.</p>
                 </div>
                 <form id="authForm" autocomplete="off" data-bitwarden-watching="false">
                     <div class="form-group">
-                        <label for="masterPassword">Master Password / Recovery Key</label>
+                        <label for="masterPassword">Master Password</label>
                         <input type="password" id="masterPassword" placeholder="••••••••••••" required autocomplete="new-password" data-bwignore="true" data-lpignore="true">
                     </div>
                     <div id="confirmPassGroup" class="form-group" style="display: none;">
                         <label for="confirmPassword">Confirm Master Password</label>
                         <input type="password" id="confirmPassword" placeholder="••••••••••••" autocomplete="new-password" data-bwignore="true" data-lpignore="true">
-                    </div>
-                    <div id="recoveryKeyNotice" class="form-group" style="display: none; background: rgba(99, 102, 241, 0.15); border: 1px solid var(--accent-color); padding: 12px; border-radius: 8px;">
-                        <label style="color: var(--accent-cyan); font-weight: 700;">YOUR EMERGENCY RECOVERY KEY</label>
-                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px;">Save this recovery key in a safe place. If you forget your password, entering this recovery key will unlock your vault. It is shown only once and never stored on this device.</p>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <input type="text" id="generatedRecoveryKey" readonly style="font-family: monospace; font-weight: 700; color: #38bdf8;">
-                            <button type="button" class="btn btn-secondary btn-sm" id="copyRecoveryKeyBtn">Copy</button>
-                        </div>
-                        <div style="display: flex; gap: 8px; margin-top: 8px;">
-                            <button type="button" class="btn btn-secondary btn-sm" id="showRecoveryQrBtn">Show QR Code</button>
-                            <button type="button" class="btn btn-secondary btn-sm" id="printRecoveryBtn">Print Backup</button>
-                        </div>
-                        <div id="recoveryQrBox" style="display: none; justify-content: center; margin-top: 12px;"></div>
-                        <label style="display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary); cursor: pointer;">
-                            <input type="checkbox" id="recoveryKeyAck" style="width: auto;">
-                            I have written down my recovery key. It cannot be recovered if lost.
-                        </label>
                     </div>
                     <div id="authError" class="error-message" style="display: none;"></div>
                     <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-block">Unlock</button>
@@ -408,15 +391,6 @@
         </div>
 
     </div>
-
-    <!-- Print-only recovery backup area -->
-    <div id="printRecoveryArea" class="print-recovery">
-        <h1>WebAuth Vault — Emergency Recovery Key</h1>
-        <p>Keep this paper backup somewhere safe. It can unlock your vault if you forget your master password. This key is never stored on your device.</p>
-        <div class="print-recovery-key" id="printRecoveryKeyText"></div>
-        <div class="print-recovery-qr" id="printRecoveryQr"></div>
-    </div>
-
     <div id="toastContainer" aria-live="polite"></div>
 
     <script src="webcrypto-fallback.js"></script>

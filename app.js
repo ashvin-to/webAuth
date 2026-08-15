@@ -2,7 +2,6 @@
  * Application Logic & TOTP Generator with IndexedDB & Auto File Backup
  */
 let masterKeyPassword = null;
-let recoveryKeyInMemory = null;
 let vaultData = [];
 let cameraStream = null;
 let cameraAnimationId = null;
@@ -11,8 +10,6 @@ let activeDetailAccountId = null;
 let dragAccountId = null;
 
 const VAULT_STORAGE_KEY = 'webauth_encrypted_vault';
-const RECOVERY_KEY_STORAGE = 'webauth_recovery_key';
-const BACKUP_AUTOSAVE_KEY = 'webauth_auto_backup_vault';
 const SESSION_CACHE_KEY = 'webauth_session_pass';
 const TOMBSTONES_STORAGE_KEY = 'webauth_tombstones';
 
@@ -248,7 +245,7 @@ async function mergeRemoteAccounts(remoteAccounts, remoteDeletes) {
     return changed;
 }
 
-// Write vault + recovery backup + linked file locally (no P2P broadcast).
+// Write vault + linked file locally (no P2P broadcast).
 async function persistVaultLocal() {
     if (!masterKeyPassword) return;
 
@@ -257,15 +254,6 @@ async function persistVaultLocal() {
 
     localStorage.setItem(VAULT_STORAGE_KEY, serializedPayload);
     await saveToIndexedDB(VAULT_STORAGE_KEY, serializedPayload);
-
-    const storedRecKey = recoveryKeyInMemory;
-
-    if (storedRecKey) {
-        const backupEncryptedPayload = await CryptoVault.encrypt(vaultData, storedRecKey);
-        const serializedBackup = JSON.stringify(backupEncryptedPayload);
-        localStorage.setItem(BACKUP_AUTOSAVE_KEY, serializedBackup);
-        await saveToIndexedDB(BACKUP_AUTOSAVE_KEY, serializedBackup);
-    }
 
     if (window.FileSync && FileSync.hasFile()) {
         await syncWithLinkedFile();
@@ -281,7 +269,7 @@ async function broadcastP2pSnapshot() {
     }
     try {
         const message = { full: true, accounts: vaultData, deletes: Array.from(tombstoneMap.values()) };
-        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const encrypted = await CryptoVault.encryptP2p(message, masterKeyPassword, 'snapshot', 'vault-master');
         const ok = await TrysteroSync.broadcast(JSON.stringify(encrypted));
         if (ok) lastSyncAt = Date.now();
         return ok;
@@ -302,7 +290,7 @@ async function broadcastP2pDelta() {
             accounts: Array.from(pendingSyncChanges.upserts.values()),
             deletes: Array.from(pendingSyncChanges.deletes.values())
         };
-        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const encrypted = await CryptoVault.encryptP2p(message, masterKeyPassword, 'delta', 'vault-master');
         const ok = await TrysteroSync.broadcast(JSON.stringify(encrypted));
         if (ok) {
             pendingSyncChanges.upserts.clear();
@@ -351,7 +339,7 @@ async function requestP2pSync() {
     syncInFlight = true;
     try {
         const message = { request: true };
-        const encrypted = await CryptoVault.encrypt(message, masterKeyPassword);
+        const encrypted = await CryptoVault.encryptP2p(message, masterKeyPassword, 'request', 'vault-master');
         const reqOk = await TrysteroSync.broadcast(JSON.stringify(encrypted));
         if (!reqOk) {
             showToast('The peer disconnected before synchronization completed.', 'error');
@@ -425,12 +413,13 @@ async function initAuthScreen() {
         const confirmGroup = document.getElementById('confirmPassGroup');
         const recoveryNotice = document.getElementById('recoveryKeyNotice');
         const submitBtn = document.getElementById('authSubmitBtn');
-        const ackEl = document.getElementById('recoveryKeyAck');
 
-        // Security: purge any recovery key previously stored in plaintext.
+        // Security: purge legacy recovery-based storage values.
         try {
-            localStorage.removeItem(RECOVERY_KEY_STORAGE);
-            await removeFromIndexedDB(RECOVERY_KEY_STORAGE);
+            localStorage.removeItem('webauth_recovery_key');
+            await removeFromIndexedDB('webauth_recovery_key');
+            localStorage.removeItem('webauth_auto_backup_vault');
+            await removeFromIndexedDB('webauth_auto_backup_vault');
         } catch (e) {}
 
         const cachedPassRaw = sessionStorage.getItem(SESSION_CACHE_KEY);
@@ -467,24 +456,15 @@ async function initAuthScreen() {
 
         if (!existingVault) {
             authTitle.textContent = 'Create Master Password';
-            authSubtitle.textContent = 'Set a master password to encrypt your 2FA vault on this device.';
+            authSubtitle.textContent = 'Set a master password to encrypt your 2FA vault on this device. P2P sync requires both devices to use the same vault password.';
             confirmGroup.style.display = 'block';
-            
-            const newRecoveryKey = generateRandomRecoveryKey();
-            document.getElementById('generatedRecoveryKey').value = newRecoveryKey;
-            recoveryNotice.style.display = 'block';
+            if (recoveryNotice) recoveryNotice.style.display = 'none';
 
             submitBtn.textContent = 'Create Vault';
-            // Block submit until the user confirms they saved the recovery key.
-            if (ackEl && submitBtn) {
-                submitBtn.disabled = true;
-                ackEl.addEventListener('change', () => {
-                    submitBtn.disabled = !ackEl.checked;
-                });
-            }
+            if (submitBtn) submitBtn.disabled = false;
         } else {
             authTitle.textContent = 'Unlock Vault';
-            authSubtitle.textContent = 'Enter your master password or Recovery Key to decrypt your 2FA keys.';
+            authSubtitle.textContent = 'Enter your master password to decrypt your 2FA keys. P2P sync requires both devices to use the same vault password.';
             confirmGroup.style.display = 'none';
             recoveryNotice.style.display = 'none';
             submitBtn.textContent = 'Unlock';
@@ -495,72 +475,9 @@ async function initAuthScreen() {
     }
 }
 
-/**
- * SECURITY: Recovery key generation uses crypto.getRandomValues() (CSPRNG).
- * The alphabet has 31 characters, and rejection sampling avoids modulo bias.
- * 16 characters from a 31-char alphabet = ~79 bits of entropy.
- */
-function generateRandomRecoveryKey() {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    const maxUnbiased = 256 - (256 % chars.length); // reject values >= this to avoid modulo bias
-    let key = 'RECOVER-';
-    const randomBytes = new Uint8Array(64); // over-provision to handle rejections
-    crypto.getRandomValues(randomBytes);
-    let byteIdx = 0;
-    for (let i = 0; i < 16; i++) {
-        if (i > 0 && i % 4 === 0) key += '-';
-        // Rejection sampling: skip bytes that would introduce modulo bias
-        let val;
-        do {
-            if (byteIdx >= randomBytes.length) {
-                crypto.getRandomValues(randomBytes);
-                byteIdx = 0;
-            }
-            val = randomBytes[byteIdx++];
-        } while (val >= maxUnbiased);
-        key += chars.charAt(val % chars.length);
-    }
-    return key;
-}
-
-function showRecoveryQr() {
-    const qrBox = document.getElementById('recoveryQrBox');
-    const keyEl = document.getElementById('generatedRecoveryKey');
-    if (!qrBox || !keyEl) return;
-    if (qrBox.style.display !== 'none' && qrBox.dataset.rendered === 'yes') {
-        qrBox.style.display = 'none';
-        return;
-    }
-    qrBox.style.display = 'flex';
-    SVGQRCode.renderInto(qrBox, keyEl.value, 170);
-    qrBox.dataset.rendered = 'yes';
-}
-
-function printRecoveryBackup() {
-    const keyEl = document.getElementById('generatedRecoveryKey');
-    const printKeyEl = document.getElementById('printRecoveryKeyText');
-    const printQrEl = document.getElementById('printRecoveryQr');
-    if (!keyEl || !printKeyEl || !printQrEl) return;
-    printKeyEl.textContent = keyEl.value;
-    SVGQRCode.renderInto(printQrEl, keyEl.value, 200);
-    window.print();
-}
-
 function setupEventListeners() {
     document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
     document.getElementById('lockBtn').addEventListener('click', lockVault);
-    
-    const copyRecBtn = document.getElementById('copyRecoveryKeyBtn');
-    if (copyRecBtn) {
-        copyRecBtn.addEventListener('click', () => {
-            const keyVal = document.getElementById('generatedRecoveryKey').value;
-            copyTextToClipboard(keyVal).then(() => {
-                showToast('Emergency Recovery Key copied to clipboard', 'success');
-            }).catch(() => {
-                showToast('Copy failed — clipboard unavailable', 'error');
-            });
-        });
-    }
     // Linked Folder Sync Modal
     const folderBtn = document.getElementById('folderSyncBtn');
     if (folderBtn) {
@@ -603,11 +520,6 @@ function setupEventListeners() {
     if (showPairingBtn) showPairingBtn.addEventListener('click', showP2pPairingQr);
     const scanPairingBtn = document.getElementById('scanP2pPairingQrBtn');
     if (scanPairingBtn) scanPairingBtn.addEventListener('click', scanP2pPairingQr);
-
-    const showRecQrBtn = document.getElementById('showRecoveryQrBtn');
-    if (showRecQrBtn) showRecQrBtn.addEventListener('click', showRecoveryQr);
-    const printRecBtn = document.getElementById('printRecoveryBtn');
-    if (printRecBtn) printRecBtn.addEventListener('click', printRecoveryBackup);
 
     const exportBtn = document.getElementById('exportMigrationBtn');
     if (exportBtn) exportBtn.addEventListener('click', openExportModal);
@@ -1061,7 +973,7 @@ async function processIncomingP2pPayload(payload) {
     if (!masterKeyPassword) return;
     try {
         const encryptedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
-        const decryptedData = await CryptoVault.decrypt(encryptedPayload, masterKeyPassword);
+        const decryptedData = await CryptoVault.decryptP2p(encryptedPayload, masterKeyPassword);
         if (Array.isArray(decryptedData)) {
             // Legacy format: plain full vault array
             await mergeRemoteAccounts(decryptedData, []);
@@ -1073,7 +985,16 @@ async function processIncomingP2pPayload(payload) {
             }
         }
     } catch (err) {
-        console.warn('[P2P] decrypt/merge error:', err);
+        const msg = err && err.message ? err.message : String(err);
+        if (msg === 'wrong-key-or-password') {
+            showToast('The paired devices may be using different vault passwords.', 'error');
+        } else if (msg === 'unsupported-protocol') {
+            showToast('The paired device is using an incompatible sync protocol version.', 'error');
+        } else if (msg === 'invalid-payload') {
+            showToast('Received an invalid or corrupted sync payload.', 'error');
+        } else {
+            showToast('The paired device could not decrypt this snapshot.', 'error');
+        }
     }
 }
 
@@ -1220,17 +1141,8 @@ async function handleAuthSubmit(e) {
             showError(errorEl, 'Passwords do not match.');
             return;
         }
-        const ackEl = document.getElementById('recoveryKeyAck');
-        if (ackEl && !ackEl.checked) {
-            showError(errorEl, 'Please confirm you have saved your Emergency Recovery Key before creating the vault.');
-            return;
-        }
         masterKeyPassword = pass;
         vaultData = [];
-
-        // Recovery key is shown ONCE and never persisted — the user must save it
-        // offline. It is kept in memory so the recovery backup can be (re)built.
-        recoveryKeyInMemory = document.getElementById('generatedRecoveryKey').value;
 
         try {
             await saveVault();
@@ -1245,7 +1157,6 @@ async function handleAuthSubmit(e) {
             const encryptedPayload = JSON.parse(existingVault);
             vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
             masterKeyPassword = pass;
-            recoveryKeyInMemory = null;
             await setSessionCache(pass);
             normalizeVault();
             await loadTombstones();
@@ -1254,28 +1165,7 @@ async function handleAuthSubmit(e) {
             return;
         } catch (err) {}
 
-        // Password failed — the typed value may be the Emergency Recovery Key,
-        // which decrypts the recovery backup (stored under BACKUP_AUTOSAVE_KEY).
-        try {
-            let backupPayloadStr = localStorage.getItem(BACKUP_AUTOSAVE_KEY);
-            if (!backupPayloadStr) {
-                backupPayloadStr = await loadFromIndexedDB(BACKUP_AUTOSAVE_KEY);
-            }
-            if (backupPayloadStr) {
-                const encryptedPayload = JSON.parse(backupPayloadStr);
-                vaultData = await CryptoVault.decrypt(encryptedPayload, pass);
-                masterKeyPassword = pass;
-                recoveryKeyInMemory = pass;
-                await setSessionCache(pass);
-                normalizeVault();
-                await loadTombstones();
-                logDebug(`Vault unlocked via Emergency Recovery Key!`);
-                showDashboard();
-                return;
-            }
-        } catch (recErr) {}
-
-        showError(errorEl, 'Incorrect master password or recovery key.');
+        showError(errorEl, 'Incorrect master password.');
     }
 }
 
@@ -2337,7 +2227,7 @@ async function handleImportVaultFile() {
                 if (encObj && (encObj.cipher || encObj.ciphertext) && encObj.iv && encObj.salt) {
                     // SECURITY: This is an encrypted backup. Try the current vault
                     // password first, then fall back to prompting for the
-                    // password/recovery key this file was encrypted with.
+                    // password this file was encrypted with.
                     try {
                         decryptedData = await CryptoVault.decrypt(encObj, masterKeyPassword);
                         logDebug('[IMPORT] decrypted OK, len=' + (Array.isArray(decryptedData) ? decryptedData.length : '?'));
@@ -2403,13 +2293,13 @@ async function handleImportVaultFile() {
 }
 
 /**
- * SECURITY: No recovery key is stored on-device by design. When a backup file
- * fails to decrypt with the current vault password, prompt the user for the
- * password or recovery key this backup was encrypted with and retry.
+ * SECURITY: When a backup file fails to decrypt with the current vault
+ * password, prompt the user for the password this backup was encrypted with
+ * and retry.
  * Returns the decrypted array, or null on failure/cancel.
  */
 async function tryImportWithAlternatePassword(encObj) {
-    const customPass = prompt('This backup file was created under a different password or recovery key. Please enter the password or recovery key for this backup file:');
+     const customPass = prompt('This backup file was created under a different password. Please enter the password for this backup file:');
     if (!customPass || !customPass.trim()) return null;
     try {
         const decryptedData = await CryptoVault.decrypt(encObj, customPass.trim());
