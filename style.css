@@ -504,6 +504,7 @@ select:focus {
     flex-direction: column;
     gap: 12px;
     padding: 16px;
+    min-width: 0;
     background: var(--panel-soft);
     border: 1px solid var(--line);
     border-radius: 16px;
@@ -593,6 +594,7 @@ select:focus {
 
 .code-number {
     flex: 1;
+    min-width: 0;
     font-family: var(--font-mono);
     font-size: 1.45rem;
     font-weight: 700;

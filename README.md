@@ -2,6 +2,13 @@
 
 A lightweight, fully client-side 2FA (TOTP) authenticator web application designed for zero-knowledge local security with flexible opt-in sync options across devices.
 
+> [!WARNING]
+> **Browser storage is not a durable backup.** WebAuth encrypts the vault before storing it, but the browser copy still lives inside the site's `localStorage` and `IndexedDB`. Clearing cookies/site data, deleting the browser profile, using a private/incognito window, or resetting site storage can permanently remove the local vault and its origin-specific encryption key. The service-worker cache stores application files, not a recoverable vault backup.
+>
+> Before clearing site data or moving to another browser profile, use **Export Encrypted Backup** and keep the JSON file somewhere separate from the browser. Alternatively, configure **Linked Folder Sync** or keep another trusted device with a current vault. P2P sync is a synchronization mechanism, not a substitute for an independent backup.
+>
+> If site data has already been cleared, recovery is possible only if an encrypted backup file, linked vault file, or another device still contains the vault. A password alone cannot recreate data after both the encrypted browser record and its origin-specific key have been deleted.
+
 ---
 
 ## 🌟 Key Features
