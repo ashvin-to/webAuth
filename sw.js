@@ -4,7 +4,7 @@
  * to ensure clients receive patched code promptly. The 'activate' handler
  * deletes old caches so stale JavaScript is not served indefinitely.
  */
-const CACHE_NAME = 'webauth-v5';
+const CACHE_NAME = 'webauth-v6';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -20,6 +20,7 @@ const CORE_ASSETS = [
   './file-sync.js',
   './p2p-sync-trystero.js',
   './app.js',
+  './ui-shell.js',
   // SECURITY: Dependencies vendored locally — no CDN JavaScript
   './vendor/otpauth-9.3.1.umd.min.js',
   './vendor/jsqr-1.4.0.js',

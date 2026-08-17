@@ -476,8 +476,9 @@ async function initAuthScreen() {
 }
 
 function setupEventListeners() {
-    document.getElementById('authForm').addEventListener('submit', handleAuthSubmit);
-    document.getElementById('lockBtn').addEventListener('click', lockVault);
+    document.getElementById('authForm')?.addEventListener('submit', handleAuthSubmit);
+    const lockBtn = document.getElementById('lockBtn');
+    if (lockBtn) lockBtn.addEventListener('click', lockVault);
     // Linked Folder Sync Modal
     const folderBtn = document.getElementById('folderSyncBtn');
     if (folderBtn) {
@@ -540,8 +541,8 @@ function setupEventListeners() {
     if (syncNowBtn) syncNowBtn.addEventListener('click', handleSyncNowFolder);
     const unlinkBtn = document.getElementById('unlinkFolderBtn');
     if (unlinkBtn) unlinkBtn.addEventListener('click', handleUnlinkFolder);
-    document.getElementById('addAccountBtn').addEventListener('click', () => openAddModal('manual'));
-    document.getElementById('emptyAddBtn').addEventListener('click', () => openAddModal('manual'));
+    document.getElementById('addAccountBtn')?.addEventListener('click', () => openAddModal('manual'));
+    document.getElementById('emptyAddBtn')?.addEventListener('click', () => openAddModal('manual'));
     const accTypeEl = document.getElementById('accType');
     if (accTypeEl) {
         accTypeEl.addEventListener('change', () => {
@@ -549,18 +550,18 @@ function setupEventListeners() {
             if (counterGroup) counterGroup.style.display = accTypeEl.value === 'HOTP' ? 'block' : 'none';
         });
     }
-    document.getElementById('closeAddModal').addEventListener('click', () => toggleModal('addModal', false));
-    document.getElementById('cancelAddModal').addEventListener('click', () => toggleModal('addModal', false));
+    document.getElementById('closeAddModal')?.addEventListener('click', () => toggleModal('addModal', false));
+    document.getElementById('cancelAddModal')?.addEventListener('click', () => toggleModal('addModal', false));
     
     // Account Detail Modal
-    document.getElementById('closeDetailModal').addEventListener('click', () => toggleModal('detailModal', false));
-    document.getElementById('closeDetailBtn').addEventListener('click', () => toggleModal('detailModal', false));
-    document.getElementById('toggleSecretBtn').addEventListener('click', toggleSecretReveal);
-    document.getElementById('deleteDetailBtn').addEventListener('click', deleteCurrentDetailAccount);
+    document.getElementById('closeDetailModal')?.addEventListener('click', () => toggleModal('detailModal', false));
+    document.getElementById('closeDetailBtn')?.addEventListener('click', () => toggleModal('detailModal', false));
+    document.getElementById('toggleSecretBtn')?.addEventListener('click', toggleSecretReveal);
+    document.getElementById('deleteDetailBtn')?.addEventListener('click', deleteCurrentDetailAccount);
 
     // Tabs in Add Modal
-    document.getElementById('tabManualBtn').addEventListener('click', () => switchAddTab('manual'));
-    document.getElementById('tabImageBtn').addEventListener('click', () => switchAddTab('image'));
+    document.getElementById('tabManualBtn')?.addEventListener('click', () => switchAddTab('manual'));
+    document.getElementById('tabImageBtn')?.addEventListener('click', () => switchAddTab('image'));
     
     // Dropzone / Image upload
     const dropZone = document.getElementById('dropZone');
@@ -577,18 +578,18 @@ function setupEventListeners() {
     });
 
     // Camera Scanner Modal
-    document.getElementById('scanCameraBtn').addEventListener('click', startCameraScanner);
-    document.getElementById('emptyScanBtn').addEventListener('click', startCameraScanner);
-    document.getElementById('closeCameraModal').addEventListener('click', stopCameraScanner);
-    document.getElementById('cancelCameraModal').addEventListener('click', stopCameraScanner);
+    document.getElementById('scanCameraBtn')?.addEventListener('click', startCameraScanner);
+    document.getElementById('emptyScanBtn')?.addEventListener('click', startCameraScanner);
+    document.getElementById('closeCameraModal')?.addEventListener('click', stopCameraScanner);
+    document.getElementById('cancelCameraModal')?.addEventListener('click', stopCameraScanner);
 
-    document.getElementById('addAccountForm').addEventListener('submit', handleAddAccount);
-    document.getElementById('searchInput').addEventListener('input', renderAccountsListOnly);
-    document.getElementById('exportBtn').addEventListener('click', exportVaultFile);
+    document.getElementById('addAccountForm')?.addEventListener('submit', handleAddAccount);
+    document.getElementById('searchInput')?.addEventListener('input', renderAccountsListOnly);
+    document.getElementById('exportBtn')?.addEventListener('click', exportVaultFile);
     
     // Import Backup JSON File
     const importFileInput = document.getElementById('importJsonFileInput');
-    document.getElementById('importFileBtn').addEventListener('click', () => importFileInput.click());
+    document.getElementById('importFileBtn')?.addEventListener('click', () => importFileInput.click());
     importFileInput.addEventListener('change', handleImportVaultFile);
 }
 
@@ -977,11 +978,13 @@ async function processIncomingP2pPayload(payload) {
         if (Array.isArray(decryptedData)) {
             // Legacy format: plain full vault array
             await mergeRemoteAccounts(decryptedData, []);
+            lastSyncAt = Date.now();
         } else if (decryptedData && typeof decryptedData === 'object') {
             if (decryptedData.request) {
                 await broadcastP2pSnapshot();
             } else {
                 await mergeRemoteAccounts(decryptedData.accounts || [], decryptedData.deletes || []);
+                lastSyncAt = Date.now();
             }
         }
     } catch (err) {
@@ -1182,7 +1185,8 @@ async function saveVault() {
 async function showDashboard() {
     document.getElementById('authSection').style.display = 'none';
     document.getElementById('dashboardSection').style.display = 'block';
-    document.getElementById('headerActions').style.display = 'block';
+    const headerActions = document.getElementById('headerActions');
+    if (headerActions) headerActions.style.display = 'block';
     buildAccountsDOM();
     startTotpTimer();
 
@@ -1216,7 +1220,8 @@ function lockVault() {
     document.getElementById('masterPassword').value = '';
     document.getElementById('confirmPassword').value = '';
     document.getElementById('dashboardSection').style.display = 'none';
-    document.getElementById('headerActions').style.display = 'none';
+    const headerActions = document.getElementById('headerActions');
+    if (headerActions) headerActions.style.display = 'none';
     document.getElementById('authSection').style.display = 'block';
     initAuthScreen();
 }
