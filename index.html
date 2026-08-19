@@ -290,6 +290,10 @@
                                 <input type="text" id="turnServerUsernameInput" class="p2p-input" placeholder="username (optional)" autocomplete="off" data-bwignore="true" data-lpignore="true" style="flex: 1;">
                                 <input type="password" id="turnServerCredentialInput" class="p2p-input" placeholder="credential (optional)" autocomplete="off" data-bwignore="true" data-lpignore="true" style="flex: 1;">
                             </div>
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--text-muted, #888); cursor: pointer;">
+                                <input type="checkbox" id="turnReplaceDefaultsCheckbox" style="accent-color: var(--accent-color, #f5a77b);">
+                                Use only my relay &amp; servers (replace the built-in STUN/TURN list)
+                            </label>
                             <button type="button" class="btn btn-secondary btn-sm" id="saveTurnServerBtn">Save TURN Relay</button>
                             <p style="font-size: 0.75rem; color: var(--text-muted, #888); margin-top: 2px;" id="turnServerStatus"></p>
                         </div>

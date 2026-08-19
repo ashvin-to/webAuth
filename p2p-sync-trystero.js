@@ -167,7 +167,9 @@ function scheduleBackoff() {
     backoffRetryTimer = setTimeout(() => {
         backoffRetryTimer = null;
         if (lastJoinCredential) {
-            join().catch(() => {});
+            // Await teardown of the previous rooms before creating new ones,
+            // so we never exceed the browser's PeerConnection cap.
+            cleanupRooms().then(() => join().catch(() => {}));
         }
     }, delay);
 }
@@ -175,14 +177,12 @@ function scheduleBackoff() {
 /**
  * Internal room cleanup shared by scheduleBackoff() and leave().
  * Does NOT change connectionState — callers set it afterwards.
+ * Asynchronous: awaits full room/PeerConnection teardown so a subsequent
+ * join() cannot create new rooms while old ones are still being destroyed
+ * (that race is what made Chrome hit its RTCPeerConnection cap).
  */
-function cleanupRooms() {
-    for (const { room } of activeRooms) {
-        try {
-            const res = room.leave();
-            if (res && typeof res.catch === 'function') res.catch(() => {});
-        } catch (e) {}
-    }
+async function cleanupRooms() {
+    const rooms = activeRooms;
     activeRooms = [];
     allPeers.clear();
     peerCount = 0;
@@ -191,6 +191,16 @@ function cleanupRooms() {
     getVaultAction = null;
     setActive(false);
     notifyPeerChange();
+
+    await Promise.allSettled(
+        rooms.map(({ room }) => {
+            try {
+                return room?.leave?.();
+            } catch {
+                return undefined;
+            }
+        })
+    );
 }
 
 function notifyError(msg) {
@@ -300,22 +310,56 @@ function isPeerApproved(deviceId) {
 
 const STORAGE_KEY_CUSTOM_PASS = 'webauth_trystero_custom_pass';
 const STORAGE_KEY_TURN = 'webauth_turn_servers';
+const STORAGE_KEY_TURN_REPLACE = 'webauth_turn_replace';
+
+function getTurnReplaceMode() {
+    try {
+        return localStorage.getItem(STORAGE_KEY_TURN_REPLACE) === '1';
+    } catch (e) {
+        return false;
+    }
+}
+
+function setTurnReplaceMode(replace) {
+    try {
+        localStorage.setItem(STORAGE_KEY_TURN_REPLACE, replace ? '1' : '0');
+    } catch (e) {}
+}
 
 // Custom TURN relays entered in the P2P modal. Free/public TURN is unreliable
 // and some networks block UDP, so allow the user to supply their own
 // relay (e.g. a self-hosted coturn on a VPS) to punch through restrictive NATs.
+function normalizeTurnServer(s) {
+    if (!s || !s.urls) return null;
+    // Accept either an array or a single comma-separated string — the UI
+    // field takes one line, so users often paste "a,b" for multi-URL relays.
+    // WebRTC rejects a URL whose ?transport= value contains a comma.
+    const rawUrls = Array.isArray(s.urls)
+        ? s.urls
+        : String(s.urls).split(',').map(u => u.trim()).filter(Boolean);
+    return {
+        ...s,
+        // Tolerate a bare "host:port" entry — WebRTC rejects URLs without a
+        // stun:/turns:/turn:/turns: scheme, so prepend turn: when missing.
+        urls: rawUrls.map(u => {
+            const trimmed = String(u).trim();
+            return /^(stun|stuns|turn|turns):/i.test(trimmed) ? trimmed : 'turn:' + trimmed;
+        })
+    };
+}
+
 function getTurnServers() {
     try {
         const raw = localStorage.getItem(STORAGE_KEY_TURN);
         const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed : [];
+        return Array.isArray(parsed) ? parsed.map(normalizeTurnServer).filter(Boolean) : [];
     } catch (e) {
         return [];
     }
 }
 
 function setTurnServers(servers) {
-    const list = Array.isArray(servers) ? servers.filter(s => s && s.urls) : [];
+    const list = Array.isArray(servers) ? servers.map(normalizeTurnServer).filter(Boolean) : [];
     try {
         if (list.length) {
             localStorage.setItem(STORAGE_KEY_TURN, JSON.stringify(list));
@@ -329,6 +373,10 @@ function setTurnServers(servers) {
 function getIceServers() {
     const custom = getTurnServers();
     if (!custom.length) return ICE_SERVERS;
+    // When the user's relay is set to replace the built-in list, use ONLY
+    // their servers (e.g. when the default free TURN is blocked on their
+    // network and they want to swap in a working provider).
+    if (getTurnReplaceMode()) return custom;
     return ICE_SERVERS.concat(custom);
 }
 
@@ -433,7 +481,13 @@ function makeRtcOpts(strategyOpts, credential) {
         // encryption key. It is the random pairing credential, never the
         // master password.
         password: credential,
-        rtcConfig: { iceServers },
+        // NOTE: The vendored simple-peer only reads RTCPeerConnection options
+        // from opts.config. Trystero spreads config.rtcConfig into the top
+        // level of the simple-peer options, so a bare `{ iceServers }` there
+        // would be silently ignored (connections fall back to default STUN).
+        // Nesting it under `config` is the only way the custom/default ICE
+        // servers actually reach the RTCPeerConnection.
+        rtcConfig: { config: { iceServers } },
         config: { iceServers },
         iceServers,
         ...strategyOpts
@@ -626,7 +680,7 @@ async function broadcast(serializedPayload) {
  * Idempotent — safe to call multiple times. Returns a promise so callers
  * can await cleanup completion before starting a new join.
  */
-function leave() {
+async function leave() {
     // Guard: prevent overlapping leave operations.
     if (leaveInProgress) return Promise.resolve();
     // Already idle — nothing to do.
@@ -644,10 +698,9 @@ function leave() {
     backoffAttempt = 0;
     consecutiveFailures = 0;
 
-    cleanupRooms();
+    await cleanupRooms();
     setConnectionState('idle');
     leaveInProgress = false;
-    return Promise.resolve();
 }
 
 /**
@@ -666,9 +719,10 @@ async function retryConnection() {
     backoffUntil = 0;
     lastErrorMsg = null;
 
-    // If currently in a non-idle state, leave first.
+    // If currently in a non-idle state, leave first — and await full
+    // teardown so no stale rooms/PeerConnections are left behind.
     if (connectionState !== 'idle') {
-        leave();
+        await leave();
     }
 
     if (lastJoinCredential) {
@@ -768,6 +822,8 @@ window.TrysteroSync = {
     migrateLegacyCustomPassphrase,
     getTurnServers,
     setTurnServers,
+    getTurnReplaceMode,
+    setTurnReplaceMode,
     getIceServers,
     isActive,
     setActive,

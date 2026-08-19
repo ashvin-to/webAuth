@@ -517,6 +517,9 @@ function setupEventListeners() {
     const saveTurnBtn = document.getElementById('saveTurnServerBtn');
     if (saveTurnBtn) saveTurnBtn.addEventListener('click', handleSaveTurnServer);
 
+    const turnReplaceCb = document.getElementById('turnReplaceDefaultsCheckbox');
+    if (turnReplaceCb) turnReplaceCb.addEventListener('change', handleToggleTurnReplace);
+
     const showPairingBtn = document.getElementById('showP2pPairingQrBtn');
     if (showPairingBtn) showPairingBtn.addEventListener('click', showP2pPairingQr);
     const scanPairingBtn = document.getElementById('scanP2pPairingQrBtn');
@@ -813,7 +816,7 @@ async function handleChangePasswordSubmit(e) {
         // Re-join P2P room if active. SECURITY: join() uses the stored random
         // pairing credential, not the master password.
         if (window.TrysteroSync && TrysteroSync.isActive()) {
-            TrysteroSync.leave();
+            await TrysteroSync.leave();
             setupTrysteroListeners();
             const joined = await TrysteroSync.join();
             if (joined) {
@@ -851,15 +854,33 @@ function populateTurnServerForm() {
     const userInput = document.getElementById('turnServerUsernameInput');
     const credInput = document.getElementById('turnServerCredentialInput');
     const statusEl = document.getElementById('turnServerStatus');
+    const replaceCb = document.getElementById('turnReplaceDefaultsCheckbox');
     const servers = TrysteroSync.getTurnServers();
     const first = servers[0] || {};
     if (urlInput) urlInput.value = first.urls || '';
     if (userInput) userInput.value = first.username || '';
     if (credInput) credInput.value = first.credential || '';
+    if (replaceCb) replaceCb.checked = !!TrysteroSync.getTurnReplaceMode();
     if (statusEl) {
         statusEl.textContent = servers.length
-            ? 'Using custom TURN relay. Rejoin P2P to apply.'
+            ? (replaceCb && replaceCb.checked
+                ? 'Using ONLY your relay — built-in STUN/TURN replaced. Rejoin P2P to apply.'
+                : 'Using custom TURN relay on top of defaults. Rejoin P2P to apply.')
             : 'No custom TURN — using default STUN/TURN servers.';
+    }
+}
+
+function handleToggleTurnReplace() {
+    if (!window.TrysteroSync) return;
+    const replaceCb = document.getElementById('turnReplaceDefaultsCheckbox');
+    TrysteroSync.setTurnReplaceMode(!!(replaceCb && replaceCb.checked));
+    populateTurnServerForm();
+    // SECURITY: Rejoin with stored credential, not master password.
+    if (TrysteroSync.isActive()) {
+        TrysteroSync.leave().then(() => {
+            setupTrysteroListeners();
+            return TrysteroSync.join();
+        }).then(() => updateP2pStatusUI());
     }
 }
 
@@ -880,9 +901,10 @@ function handleSaveTurnServer() {
     populateTurnServerForm();
     // SECURITY: Rejoin with stored credential, not master password.
     if (TrysteroSync.isActive()) {
-        TrysteroSync.leave();
-        setupTrysteroListeners();
-        TrysteroSync.join().then(() => updateP2pStatusUI());
+        TrysteroSync.leave().then(() => {
+            setupTrysteroListeners();
+            return TrysteroSync.join();
+        }).then(() => updateP2pStatusUI());
     }
 }
 
@@ -1038,7 +1060,7 @@ function setupTrysteroListeners() {
         const credential = passVal || TrysteroSync.generatePairingCredential();
         await TrysteroSync.setCustomPassphrase(credential);
         if (TrysteroSync.isActive()) {
-            TrysteroSync.leave();
+            await TrysteroSync.leave();
             const joined = await TrysteroSync.join();
             updateP2pStatusUI();
             if (joined) {
